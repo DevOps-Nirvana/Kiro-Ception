@@ -1,5 +1,5 @@
-# Default configuration for Kiro Total Recall
-# Copy to ~/.config/kiro-total-recall/config.toml to customize
+# Default configuration for Kiro Ception
+# Copy to ~/.config/kiro-ception/config.toml to customize
 
 [sources.cli]
 enabled = true
@@ -23,7 +23,7 @@ patterns = [
 # Backend: "sentence-transformers" (default, local) or "openai-compatible" (Ollama, LM Studio, OpenAI, etc.)
 backend = "sentence-transformers"
 model = "all-MiniLM-L6-v2"
-cache_dir = "~/.cache/kiro-total-recall"
+cache_dir = "~/.cache/kiro-ception"
 
 # OpenAI-compatible backend settings (only used when backend = "openai-compatible")
 # api_base = "http://localhost:11434/v1"  # Ollama default

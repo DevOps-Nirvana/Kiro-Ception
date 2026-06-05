@@ -1,4 +1,4 @@
-"""FastMCP server for Kiro Total Recall.
+"""FastMCP server for Kiro Ception.
 
 Uses a leader-follower pattern: the first instance becomes the leader
 (holds embeddings in RAM, runs indexer, serves HTTP). Additional instances
@@ -22,7 +22,7 @@ from .indexer import get_memory_limit
 from .leader import get_instance_manager
 from .models import Source
 
-mcp = FastMCP("kiro-total-recall")
+mcp = FastMCP("kiro-ception")
 
 # --- Initialization ---
 # Deferred: role assignment happens on first tool call to avoid
@@ -719,9 +719,9 @@ def rescan_now() -> dict:
 
 
 @mcp.tool()
-def get_recall_config() -> dict:
+def get_config() -> dict:
     """
-    Get the current computed configuration for Total Recall.
+    Get the current computed configuration for Kiro Ception.
 
     Shows the effective configuration including defaults, user overrides,
     and computed values like the embedding backend fingerprint.
@@ -811,7 +811,7 @@ def reload_config() -> dict:
     """
     Reload configuration from disk and apply safe changes immediately.
 
-    Re-reads ~/.config/kiro-total-recall/config.toml and applies changes.
+    Re-reads ~/.config/kiro-ception/config.toml and applies changes.
     Safe changes (throttle_ms, batch_size, search defaults) take effect immediately.
     Breaking changes (model, backend, dimensions) are detected but require
     force_reindex to take effect.

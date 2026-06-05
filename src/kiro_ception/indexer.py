@@ -169,7 +169,7 @@ class ConversationIndex:
                     expected_dim = self._get_embedding_dim()
                     if sample.shape[0] != expected_dim:
                         print(
-                            f"[Total Recall] Cache dimension mismatch "
+                            f"[kiro-ception] Cache dimension mismatch "
                             f"(cached={sample.shape[0]}, expected={expected_dim}). "
                             f"Discarding cache."
                         )
@@ -216,7 +216,7 @@ class ConversationIndex:
     def needs_rebuild(self) -> bool:
         """Check if index needs rebuild (new sessions or backend config changed)."""
         if self._backend and self._backend.fingerprint() != self._backend_fingerprint:
-            print("[Total Recall] Backend configuration changed. Full re-index required.")
+            print("[kiro-ception] Backend configuration changed. Full re-index required.")
             return True
         return _get_sessions_fingerprint() != self._sessions_fingerprint
 
@@ -238,12 +238,12 @@ class ConversationIndex:
         # Count sessions by source
         cli_sessions = [s for s in selected if s.source == Source.CLI]
         ide_sessions = [s for s in selected if s.source == Source.IDE]
-        print(f"[Total Recall] Loading messages: {len(cli_sessions)} CLI sessions, {len(ide_sessions)} IDE sessions...")
+        print(f"[kiro-ception] Loading messages: {len(cli_sessions)} CLI sessions, {len(ide_sessions)} IDE sessions...")
 
         self._messages = load_messages_for_sessions(selected)
 
         if not self._messages:
-            print("[Total Recall] No messages found.")
+            print("[kiro-ception] No messages found.")
             self._embeddings = np.array([])
             self._text_hashes = []
             return
@@ -251,7 +251,7 @@ class ConversationIndex:
         # Count messages by source
         cli_msgs = sum(1 for m in self._messages if m.source == Source.CLI)
         ide_msgs = sum(1 for m in self._messages if m.source == Source.IDE)
-        print(f"[Total Recall] Loaded {len(self._messages)} messages (CLI: {cli_msgs}, IDE: {ide_msgs})")
+        print(f"[kiro-ception] Loaded {len(self._messages)} messages (CLI: {cli_msgs}, IDE: {ide_msgs})")
 
         embedding_dim = self._get_embedding_dim()
         cache = self._load_cache()
@@ -275,11 +275,11 @@ class ConversationIndex:
                 cached_count += 1
 
         if cached_count > 0:
-            print(f"[Total Recall] Loaded {cached_count} cached embeddings.")
+            print(f"[kiro-ception] Loaded {cached_count} cached embeddings.")
 
         new_cache = {}
         if texts_to_embed:
-            print(f"[Total Recall] Embedding {len(texts_to_embed)} new messages...")
+            print(f"[kiro-ception] Embedding {len(texts_to_embed)} new messages...")
             batch_size = 100
             for batch_start in range(0, len(texts_to_embed), batch_size):
                 batch_end = min(batch_start + batch_size, len(texts_to_embed))
@@ -293,16 +293,16 @@ class ConversationIndex:
                     new_cache[self._text_hashes[idx]] = batch_embeddings[i]
 
                 if batch_end < len(texts_to_embed):
-                    print(f"[Total Recall] Embedded {batch_end}/{len(texts_to_embed)} messages...")
+                    print(f"[kiro-ception] Embedded {batch_end}/{len(texts_to_embed)} messages...")
 
-            print(f"[Total Recall] Embedding complete. Saving cache...")
+            print(f"[kiro-ception] Embedding complete. Saving cache...")
 
         if new_cache:
             self._save_cache(new_cache)
-            print(f"[Total Recall] Cache saved ({len(new_cache)} new embeddings).")
+            print(f"[kiro-ception] Cache saved ({len(new_cache)} new embeddings).")
 
         self._build_metadata_indices()
-        print(f"[Total Recall] Index ready.")
+        print(f"[kiro-ception] Index ready.")
 
     def ensure_index(self):
         """Ensure index is built and up-to-date."""

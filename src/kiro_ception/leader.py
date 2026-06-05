@@ -186,8 +186,8 @@ class LeaderInstance:
 
                     elif self.path == "/config":
                         # Import here to avoid circular
-                        from .server import get_recall_config
-                        self._send_json(get_recall_config())
+                        from .server import get_config
+                        self._send_json(get_config())
 
                     elif self.path == "/health":
                         self._send_json({"status": "ok", "role": "leader", "pid": os.getpid()})

@@ -1,19 +1,19 @@
 ---
-name: "kiro-total-recall"
-version: "0.2.0"
-displayName: "Kiro Total Recall"
+name: "kiro-ception"
+version: "1.0.0"
+displayName: "Kiro Ception"
 description: "Semantic search across Kiro CLI and IDE conversation history - find past discussions by meaning, not just keywords"
 keywords: ["history", "recall", "remember", "remind", "remind me", "past conversation", "previous chat", "what did we discuss", "how did we", "like we discussed", "as I mentioned", "what did we", "what were those", "we implemented", "we built", "we did", "we added", "we changed", "we fixed", "we decided", "previously", "last time", "earlier", "before", "that thing we", "what was that", "what approach", "how did I", "where did we leave off", "yesterday", "last week", "recently", "I don't remember", "I forget", "didn't we already", "same as we did", "why did we choose", "what was the reasoning", "what was the solution"]
 author: "Farley Farley (originally by Danilo Poccia)"
 ---
 
-# Kiro Total Recall
+# Kiro Ception
 
 Search past Kiro conversation history using semantic search. Works with both Kiro CLI and Kiro IDE conversations. Indexes conversations in the background and provides instant semantic search results.
 
 ## Important: Background Indexing
 
-Total Recall indexes conversations in the background. On first launch or after configuration changes, indexing may take a few minutes. Search results will be available immediately for previously-indexed conversations, and new conversations appear as indexing progresses.
+Kiro Ception indexes conversations in the background. On first launch or after configuration changes, indexing may take a few minutes. Search results will be available immediately for previously-indexed conversations, and new conversations appear as indexing progresses.
 
 Use `get_indexing_status` to check if indexing is complete or still in progress.
 
@@ -127,7 +127,7 @@ Check indexing progress or debug configuration:
 - "Re-index everything from scratch"
 
 ```
-User: "Is Total Recall fully indexed?"
+User: "Is Kiro Ception fully indexed?"
 → get_indexing_status()
 
 User: "Pick up my recent conversations"
@@ -159,7 +159,7 @@ User: "Re-index everything from scratch"
 | `rescan_now` | Trigger immediate rescan for new/changed conversations |
 | `force_reindex` | Clear session state and re-read ALL files (heavy, use sparingly) |
 | `reload_config` | Re-read config file and apply safe changes without restart |
-| `get_recall_config` | Show effective configuration (model, backend, cache stats) |
+| `get_config` | Show effective configuration (model, backend, cache stats) |
 | `get_instance_role` | Show if this instance is the leader or follower (debugging) |
 
 ## Parameters

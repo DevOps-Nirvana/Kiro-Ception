@@ -1,4 +1,4 @@
-"""Configuration management for Kiro Total Recall."""
+"""Configuration management for Kiro Ception."""
 
 import tomllib
 from dataclasses import dataclass, field
@@ -6,7 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 
 # Default paths
-CONFIG_DIR = Path.home() / ".config" / "kiro-total-recall"
+CONFIG_DIR = Path.home() / ".config" / "kiro-ception"
 CONFIG_FILE = CONFIG_DIR / "config.toml"
 DEFAULT_CONFIG = Path(__file__).parent.parent.parent / "config.default.toml"
 
@@ -109,7 +109,7 @@ class EmbeddingConfig:
 
     backend: str = "sentence-transformers"  # "sentence-transformers" or "openai-compatible"
     model: str = EMBEDDING_MODEL
-    cache_dir: str = "~/.cache/kiro-total-recall"
+    cache_dir: str = "~/.cache/kiro-ception"
     # OpenAI-compatible backend settings
     api_base: str = ""  # e.g. "http://localhost:11434/v1" for Ollama
     api_key: str = ""  # Optional, for hosted providers (OpenAI, etc.)

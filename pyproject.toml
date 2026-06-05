@@ -1,11 +1,11 @@
 [project]
-name = "kiro-total-recall"
-version = "0.1.0"
+name = "kiro-ception"
+version = "1.0.0"
 description = "Semantic search across Kiro CLI and IDE conversation history"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
-authors = [{ name = "Danilo Poccia" }]
+authors = [{ name = "Farley Farley" }]
 keywords = ["kiro", "mcp", "semantic-search", "conversation-history"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -25,19 +25,19 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/danilop/kiro-total-recall"
-Repository = "https://github.com/danilop/kiro-total-recall"
+Homepage = "https://github.com/farleyfarley/kiro-ception"
+Repository = "https://github.com/farleyfarley/kiro-ception"
 
 [project.scripts]
-kiro-total-recall = "kiro_total_recall.server:main"
-kiro-total-recall-index = "kiro_total_recall.cli:main"
+kiro-ception = "kiro_ception.server:main"
+kiro-ception-index = "kiro_ception.cli:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/kiro_total_recall"]
+packages = ["src/kiro_ception"]
 
 [tool.ruff]
 target-version = "py311"

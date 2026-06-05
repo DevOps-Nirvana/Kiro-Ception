@@ -1,7 +1,7 @@
 {
   "mcpServers": {
-    "total-recall": {
-      "command": "/Users/farley/ml-learnings/kiro-total-recall/.venv/bin/kiro-total-recall"
+    "kiro-ception": {
+      "command": "/Users/farley/ml-learnings/kiro-total-recall/.venv/bin/kiro-ception"
     }
   }
 }

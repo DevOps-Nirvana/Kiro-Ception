@@ -1,4 +1,4 @@
-"""Pydantic data models for Kiro Total Recall."""
+"""Pydantic data models for Kiro Ception."""
 
 from datetime import datetime
 from enum import Enum

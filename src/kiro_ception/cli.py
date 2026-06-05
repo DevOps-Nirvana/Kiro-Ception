@@ -85,7 +85,7 @@ def main():
     force_rebuild = "--force" in sys.argv or "-f" in sys.argv
 
     print("=" * 60, flush=True)
-    print("  Kiro Total Recall — Index Builder (streaming)", flush=True)
+    print("  Kiro Ception — Index Builder (streaming)", flush=True)
     print("=" * 60, flush=True)
     if force_rebuild:
         print("  ** FORCE REBUILD — ignoring file-level cache **", flush=True)

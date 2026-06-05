@@ -63,9 +63,9 @@ class SentenceTransformersBackend(EmbeddingBackend):
             from sentence_transformers import SentenceTransformer
 
             model_name = self._config.embedding.model
-            print(f"[Total Recall] Loading embedding model '{model_name}'...")
+            print(f"[kiro-ception] Loading embedding model '{model_name}'...")
             self._model = SentenceTransformer(model_name)
-            print("[Total Recall] Model loaded.")
+            print("[kiro-ception] Model loaded.")
         return self._model
 
     def encode(self, texts: list[str]) -> np.ndarray:
@@ -188,7 +188,7 @@ def get_embedding_backend() -> EmbeddingBackend:
                 "(e.g., 'http://localhost:11434/v1' for Ollama)."
             )
         print(
-            f"[Total Recall] Using OpenAI-compatible backend: "
+            f"[kiro-ception] Using OpenAI-compatible backend: "
             f"{config.embedding.api_base} model={config.embedding.model}"
         )
         return OpenAICompatibleBackend()

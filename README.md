@@ -1,8 +1,8 @@
-# Kiro Total Recall
+# Kiro Ception
 
 Ever told Kiro "like we discussed yesterday" only to realize... it has no idea?
 
-**Total Recall** gives Kiro the memory it's missing.
+**Kiro Ception** gives Kiro the memory it's missing.
 
 ## The Problem
 
@@ -10,14 +10,14 @@ Ever told Kiro "like we discussed yesterday" only to realize... it has no idea?
 2. **Projects Don't Share Knowledge**: Your preferences (testing style, package managers, patterns) aren't remembered across projects.
 3. **CLI and IDE Are Separate**: Conversations in Kiro CLI don't connect to Kiro IDE.
 
-**Total Recall indexes every Kiro conversation and provides semantic search.** Find discussions by *meaning*, not just keywords.
+**Kiro Ception indexes every Kiro conversation and provides semantic search.** Find discussions by *meaning*, not just keywords.
 
 ## Quickstart
 
 ### As a Kiro Power (Recommended, IDE only)
 
 1. In Kiro IDE: Powers panel → **Add power from GitHub**
-2. Enter: `https://github.com/danilop/kiro-total-recall`
+2. Enter: `https://github.com/farleyfarley/kiro-ception`
 3. The power activates automatically when you mention "recall", "remember", "remind me", "what did we", or reference past conversations
 
 ### Manual MCP Setup (CLI and IDE)
@@ -27,9 +27,9 @@ Add to `~/.kiro/settings/mcp.json` (this config is shared by both CLI and IDE):
 ```json
 {
   "mcpServers": {
-    "total-recall": {
+    "kiro-ception": {
       "command": "uvx",
-      "args": ["--from", "git+https://github.com/danilop/kiro-total-recall", "kiro-total-recall"]
+      "args": ["--from", "git+https://github.com/farleyfarley/kiro-ception", "kiro-ception"]
     }
   }
 }
@@ -39,7 +39,7 @@ Add to `~/.kiro/settings/mcp.json` (this config is shared by both CLI and IDE):
 
 ### Verify Installation
 
-In Kiro CLI: `/mcp` should list `total-recall`
+In Kiro CLI: `/mcp` should list `kiro-ception`
 
 In Kiro IDE: Check the MCP Servers panel
 
@@ -61,7 +61,7 @@ In Kiro IDE: Check the MCP Servers panel
 └────────────────────────────────┼────────────────────────────────────────┘
                                  ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                      Kiro Total Recall                                  │
+│                      Kiro Ception                                  │
 │                                                                         │
 │  ┌──────────────────┐  ┌─────────────────┐  ┌───────────────────────┐  │
 │  │ Background       │  │ In-Memory       │  │ MCP Server            │  │
@@ -91,7 +91,7 @@ In Kiro IDE: Check the MCP Servers panel
 
 ### The Index: Making Search Fast
 
-On startup, Total Recall:
+On startup, Kiro Ception:
 
 1. **Loads** existing embeddings from SQLite cache into a numpy matrix (instant)
 2. **Starts** background indexer thread to discover and embed new messages
@@ -138,7 +138,7 @@ The background indexer:
 | `rescan_now` | Trigger immediate rescan for new/changed conversations |
 | `force_reindex` | Clear session state and re-read ALL files (heavy, use sparingly) |
 | `reload_config` | Re-read config file and apply safe changes without restart |
-| `get_recall_config` | Show effective configuration (model, backend, cache stats) |
+| `get_config` | Show effective configuration (model, backend, cache stats) |
 | `get_instance_role` | Show if this instance is leader or follower (debugging) |
 
 ### Parameters
@@ -220,7 +220,7 @@ search_ide_history(query="deployment", after="2026-06-01")
 
 ## Configuration
 
-Create `~/.config/kiro-total-recall/config.toml` to customize:
+Create `~/.config/kiro-ception/config.toml` to customize:
 
 ```toml
 [sources.cli]
@@ -243,7 +243,7 @@ patterns = [
 # Backend: "sentence-transformers" (default) or "openai-compatible"
 backend = "sentence-transformers"
 model = "all-MiniLM-L6-v2"
-cache_dir = "~/.cache/kiro-total-recall"
+cache_dir = "~/.cache/kiro-ception"
 batch_size = 16  # Messages per embedding request
 
 [search]
@@ -265,7 +265,7 @@ leader_port = 19742  # Localhost port for leader-follower communication
 
 ### Embedding Backends
 
-Total Recall supports two embedding backends:
+Kiro Ception supports two embedding backends:
 
 #### sentence-transformers (default)
 
@@ -325,7 +325,7 @@ dimensions = 1024
 
 #### Switching backends or models
 
-When you change the backend, model, or dimensions in config, Total Recall automatically detects the change and creates a new cache. Existing embeddings in the old cache are preserved (in case you switch back).
+When you change the backend, model, or dimensions in config, Kiro Ception automatically detects the change and creates a new cache. Existing embeddings in the old cache are preserved (in case you switch back).
 
 No manual intervention is needed — just update the config and restart.
 
@@ -357,17 +357,17 @@ For initial indexing or manual rebuilds, use the standalone CLI tool:
 
 ```bash
 # Normal run (skips unchanged sessions)
-uv run kiro-total-recall-index
+uv run kiro-ception-index
 
 # Force full rebuild
-uv run kiro-total-recall-index --force
+uv run kiro-ception-index --force
 ```
 
 The CLI provides detailed progress reporting with per-session logging, timing, and error handling.
 
 ## Memory Management
 
-Total Recall limits in-memory index size to prevent excessive memory usage. By default, it uses 1/3 of physical RAM. When the limit is reached, the oldest sessions are excluded from the index (newest sessions are kept).
+Kiro Ception limits in-memory index size to prevent excessive memory usage. By default, it uses 1/3 of physical RAM. When the limit is reached, the oldest sessions are excluded from the index (newest sessions are kept).
 
 | Variable | Description | Default |
 |----------|-------------|---------|
@@ -377,11 +377,11 @@ Total Recall limits in-memory index size to prevent excessive memory usage. By d
 ## Project Structure
 
 ```
-kiro-total-recall/
+kiro-ception/
 ├── POWER.md                      # Kiro Power manifest + steering
 ├── mcp.json                      # MCP server config for Power
 ├── config.default.toml           # Default configuration
-├── src/kiro_total_recall/
+├── src/kiro_ception/
 │   ├── server.py                 # FastMCP server, tool definitions, search
 │   ├── background_indexer.py     # Background thread indexing + status
 │   ├── leader.py                 # Leader-follower coordination
