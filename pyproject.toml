@@ -30,7 +30,6 @@ Repository = "https://github.com/farleyfarley/kiro-ception"
 
 [project.scripts]
 kiro-ception = "kiro_ception.server:main"
-kiro-ception-index = "kiro_ception.cli:main"
 
 [build-system]
 requires = ["hatchling"]
