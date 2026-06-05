@@ -52,6 +52,9 @@ def _ensure_initialized():
         # Start background indexer (only leader indexes)
         indexer = get_background_indexer()
         indexer.start()
+        # Eagerly load the search index from existing cache so the first
+        # search doesn't hit an empty matrix (if prior data exists in SQLite)
+        _get_search_index()
 
 
 def _handle_search_request(request: dict) -> dict:
@@ -86,15 +89,31 @@ class SearchIndex:
         self._metadata: list[dict] = []  # parallel to embeddings rows
         self._last_refresh: float = 0
         self._count: int = 0
+        self._loading: bool = False  # True when embeddings exist but metadata not yet populated
+        self._embedding_count_hint: int = 0  # For informative "loading" messages
+        self._ever_loaded: bool = False  # Has the index ever successfully loaded data?
 
     @property
     def message_count(self) -> int:
         return self._count
 
+    @property
+    def is_loading(self) -> bool:
+        return self._loading
+
+    @property
+    def embedding_count_hint(self) -> int:
+        return self._embedding_count_hint
+
     def refresh_if_needed(self):
-        """Reload from sqlite if more than 60 seconds since last refresh."""
+        """Reload from sqlite if needed.
+
+        The 60-second throttle only applies after a successful first load.
+        If the index has never loaded data, allow refresh on every call
+        (so we pick up data as soon as the indexer populates the tables).
+        """
         now = time.time()
-        if now - self._last_refresh < _MIN_REFRESH_INTERVAL and self._embeddings is not None:
+        if self._ever_loaded and now - self._last_refresh < _MIN_REFRESH_INTERVAL:
             return
         self._refresh()
 
@@ -103,6 +122,7 @@ class SearchIndex:
         indexer = get_background_indexer()
         cache = indexer.cache
         if cache is None:
+            self._loading = True
             return
 
         # Load all messages with their text_hash
@@ -114,10 +134,20 @@ class SearchIndex:
         rows = cursor.fetchall()
 
         if not rows:
+            # Check if embeddings exist — if so, the indexer just hasn't
+            # stored message metadata yet (still loading)
+            emb_count = cache.embedding_count
+            if emb_count > 0:
+                self._loading = True
+                self._embedding_count_hint = emb_count
+            else:
+                self._loading = False
+                self._embedding_count_hint = 0
+
             self._embeddings = None
             self._metadata = []
             self._count = 0
-            self._last_refresh = time.time()
+            # Don't set _last_refresh or _ever_loaded — allow retry on next call
             return
 
         # Collect text hashes and load embeddings in batch
@@ -149,6 +179,8 @@ class SearchIndex:
             self._embeddings = np.vstack(embedding_list)
             self._metadata = metadata
             self._count = len(metadata)
+            self._loading = False
+            self._ever_loaded = True
         else:
             self._embeddings = None
             self._metadata = []
@@ -318,6 +350,17 @@ def _leader_search(
     # Ensure in-memory index is loaded/refreshed
     search_index = _get_search_index()
     if search_index.message_count == 0:
+        if search_index.is_loading:
+            emb_hint = search_index.embedding_count_hint
+            return {
+                "results": [],
+                "query": query,
+                "total_matches": 0,
+                "hint": (
+                    f"The search index is still loading ({emb_hint} embeddings available "
+                    f"but metadata not yet populated). Try again in a few seconds."
+                ),
+            }
         return {
             "results": [],
             "query": query,
