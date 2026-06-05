@@ -658,12 +658,15 @@ def force_reindex() -> dict:
     """
     Trigger a full reindex of all conversation history.
 
-    Clears the session state cache and re-processes all sessions from scratch.
-    Existing embeddings are preserved (only truly new text gets re-embedded).
-    The reindex runs in the background — use get_indexing_status to monitor progress.
+    Clears the session state cache so ALL sessions are re-read from disk
+    and re-processed. Existing embeddings are preserved (only truly new text
+    gets re-embedded). Use this after changing filter rules or if the index
+    seems corrupted.
+
+    This is the heavy option — prefer rescan_now for picking up new messages.
 
     Returns:
-        Confirmation that reindex was triggered
+        Confirmation that full reindex was triggered
     """
     _ensure_initialized()
     manager = get_instance_manager()
@@ -679,8 +682,39 @@ def force_reindex() -> dict:
     indexer = get_background_indexer()
     indexer.trigger_reindex()
     return {
-        "status": "reindex_triggered",
-        "message": "Full reindex started in background. Use get_indexing_status to monitor progress.",
+        "status": "force_reindex_triggered",
+        "message": "Full reindex started — all sessions will be re-read. Existing embeddings preserved. Use get_indexing_status to monitor.",
+    }
+
+
+@mcp.tool()
+def rescan_now() -> dict:
+    """
+    Trigger an immediate rescan for new or changed conversations.
+
+    Checks all session files for mtime changes and indexes any new/modified
+    sessions. Much faster than force_reindex since unchanged files are skipped.
+    Use this to pick up recent conversations without waiting for the periodic rescan.
+
+    Returns:
+        Confirmation that rescan was triggered
+    """
+    _ensure_initialized()
+    manager = get_instance_manager()
+
+    if not manager.is_leader:
+        follower = manager.follower_instance
+        if follower:
+            try:
+                return follower.trigger_rescan()
+            except Exception:
+                return {"error": "Leader unavailable"}
+
+    indexer = get_background_indexer()
+    indexer.trigger_rescan()
+    return {
+        "status": "rescan_triggered",
+        "message": "Immediate rescan started — checking for new/changed sessions. Use get_indexing_status to monitor.",
     }
 
 
@@ -741,6 +775,7 @@ def get_recall_config() -> dict:
         },
         "indexing": {
             "throttle_ms": config.indexing.throttle_ms,
+            "rescan_interval_minutes": config.indexing.rescan_interval_minutes,
         },
         "server": {
             "leader_port": config.server.leader_port,
@@ -769,6 +804,71 @@ def get_instance_role() -> dict:
     _ensure_initialized()
     manager = get_instance_manager()
     return manager.get_role_info()
+
+
+@mcp.tool()
+def reload_config() -> dict:
+    """
+    Reload configuration from disk and apply safe changes immediately.
+
+    Re-reads ~/.config/kiro-total-recall/config.toml and applies changes.
+    Safe changes (throttle_ms, batch_size, search defaults) take effect immediately.
+    Breaking changes (model, backend, dimensions) are detected but require
+    force_reindex to take effect.
+
+    Returns:
+        List of changes detected, what was applied, and any warnings
+    """
+    _ensure_initialized()
+    manager = get_instance_manager()
+
+    if not manager.is_leader:
+        follower = manager.follower_instance
+        if follower:
+            try:
+                return follower.reload_config()
+            except Exception:
+                return {"error": "Leader unavailable"}
+
+    from .config import reload_config as _reload, diff_configs
+
+    old_config, new_config = _reload()
+    changes = diff_configs(old_config, new_config)
+
+    if not changes:
+        return {
+            "status": "no_changes",
+            "message": "Configuration file has not changed.",
+        }
+
+    # Categorize changes
+    safe_changes = [c for c in changes if c["impact"] == "safe"]
+    breaking_changes = [c for c in changes if c["impact"] == "requires_reindex"]
+
+    applied = []
+    deferred = []
+    warnings = []
+
+    # Apply safe changes to the background indexer
+    if safe_changes:
+        applied = [c["key"] for c in safe_changes]
+
+    # Flag breaking changes
+    if breaking_changes:
+        for c in breaking_changes:
+            deferred.append(f"{c['key']} — requires force_reindex to take effect")
+            warnings.append(
+                f"{c['key']} changed: {c['old']} → {c['new']}. "
+                f"This requires a full reindex. Run force_reindex to rebuild with the new settings."
+            )
+
+    return {
+        "status": "config_reloaded",
+        "changes": changes,
+        "applied": applied,
+        "deferred": deferred,
+        "warnings": warnings,
+    }
 
 
 def main():

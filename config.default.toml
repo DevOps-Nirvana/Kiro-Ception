@@ -61,6 +61,9 @@ fraction = 0.33
 # Milliseconds to sleep between embedding batches (0 = full speed)
 # Set higher (e.g., 500-2000) to reduce GPU load during active use
 throttle_ms = 0
+# Minutes between automatic rescans for new/changed sessions (0 = disabled)
+# The indexer rescans conversation files periodically to pick up new messages
+rescan_interval_minutes = 10
 
 [server]
 # Localhost-only port for leader-follower inter-process communication

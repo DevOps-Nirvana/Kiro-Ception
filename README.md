@@ -103,6 +103,7 @@ The background indexer:
 - Embeds messages using the configured backend
 - Stores results atomically in SQLite (survives Ctrl+C)
 - Refreshes the in-memory search matrix every 60 seconds
+- **Rescans for new/changed sessions every 10 minutes** (configurable)
 
 ## Features
 
@@ -134,7 +135,9 @@ The background indexer:
 | Tool | Use Case |
 |------|----------|
 | `get_indexing_status` | Check indexing progress, rate, ETA, errors |
-| `force_reindex` | Trigger a full re-index of all conversations |
+| `rescan_now` | Trigger immediate rescan for new/changed conversations |
+| `force_reindex` | Clear session state and re-read ALL files (heavy, use sparingly) |
+| `reload_config` | Re-read config file and apply safe changes without restart |
 | `get_recall_config` | Show effective configuration (model, backend, cache stats) |
 | `get_instance_role` | Show if this instance is leader or follower (debugging) |
 
@@ -254,6 +257,7 @@ fraction = 0.33  # Use 1/3 of RAM
 
 [indexing]
 throttle_ms = 0  # Sleep between batches (0 = full speed, 500+ = gentle)
+rescan_interval_minutes = 10  # Auto-rescan for new messages (0 = disabled)
 
 [server]
 leader_port = 19742  # Localhost port for leader-follower communication

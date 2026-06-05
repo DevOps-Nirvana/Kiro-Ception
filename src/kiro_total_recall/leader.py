@@ -148,6 +148,29 @@ class LeaderInstance:
                         indexer.trigger_reindex()
                         self._send_json({"status": "reindex_triggered"})
 
+                    elif self.path == "/rescan":
+                        from .background_indexer import get_background_indexer
+                        indexer = get_background_indexer()
+                        indexer.trigger_rescan()
+                        self._send_json({"status": "rescan_triggered"})
+
+                    elif self.path == "/reload-config":
+                        from .config import reload_config as _reload, diff_configs
+                        old_config, new_config = _reload()
+                        changes = diff_configs(old_config, new_config)
+                        safe_changes = [c for c in changes if c["impact"] == "safe"]
+                        breaking_changes = [c for c in changes if c["impact"] == "requires_reindex"]
+                        self._send_json({
+                            "status": "config_reloaded" if changes else "no_changes",
+                            "changes": changes,
+                            "applied": [c["key"] for c in safe_changes],
+                            "deferred": [f"{c['key']} — requires force_reindex" for c in breaking_changes],
+                            "warnings": [
+                                f"{c['key']} changed: {c['old']} → {c['new']}. Requires force_reindex."
+                                for c in breaking_changes
+                            ],
+                        })
+
                     else:
                         self._send_json({"error": "not found"}, 404)
 
@@ -290,6 +313,20 @@ class FollowerInstance:
         """Get leader's role info."""
         session = self._get_session()
         resp = session.get(f"{self._base_url()}/role", timeout=5)
+        resp.raise_for_status()
+        return resp.json()
+
+    def reload_config(self) -> dict:
+        """Tell leader to reload config."""
+        session = self._get_session()
+        resp = session.post(f"{self._base_url()}/reload-config", json={}, timeout=5)
+        resp.raise_for_status()
+        return resp.json()
+
+    def trigger_rescan(self) -> dict:
+        """Tell leader to rescan now."""
+        session = self._get_session()
+        resp = session.post(f"{self._base_url()}/rescan", json={}, timeout=5)
         resp.raise_for_status()
         return resp.json()
 

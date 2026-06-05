@@ -122,11 +122,22 @@ User: "I forget how we set up the CI pipeline for that service"
 Check indexing progress or debug configuration:
 - "Is the search index ready?"
 - "What embedding model is configured?"
-- "Re-index everything"
+- "Pick up my latest conversations"
+- "Reload the config"
+- "Re-index everything from scratch"
 
 ```
 User: "Is Total Recall fully indexed?"
 → get_indexing_status()
+
+User: "Pick up my recent conversations"
+→ rescan_now()
+
+User: "I changed the config, reload it"
+→ reload_config()
+
+User: "Re-index everything from scratch"
+→ force_reindex()
 ```
 
 ## Available Tools
@@ -145,7 +156,9 @@ User: "Is Total Recall fully indexed?"
 | Tool | Use Case |
 |------|----------|
 | `get_indexing_status` | Check indexing progress, rate, ETA, errors |
-| `force_reindex` | Trigger a full re-index of all conversations |
+| `rescan_now` | Trigger immediate rescan for new/changed conversations |
+| `force_reindex` | Clear session state and re-read ALL files (heavy, use sparingly) |
+| `reload_config` | Re-read config file and apply safe changes without restart |
 | `get_recall_config` | Show effective configuration (model, backend, cache stats) |
 | `get_instance_role` | Show if this instance is the leader or follower (debugging) |
 
@@ -184,7 +197,9 @@ search_global_history(query="deployment issue", after="2026-06-03")
 - Higher scores (closer to 1.0) = better semantic matches
 - The `source` field shows whether a result is from CLI or IDE
 - If results seem incomplete, check `get_indexing_status` — indexing may still be in progress
-- Use `force_reindex` after changing filters or configuration
+- Use `rescan_now` to immediately pick up recent conversations
+- Use `reload_config` after editing the config file
+- Use `force_reindex` after changing message filter rules (heavy operation)
 - For project-specific questions, prefer `search_project_history` (narrows to current workspace)
 - For cross-project or preference questions, use `search_global_history`
 - When the user mentions a specific project name, include it in the query

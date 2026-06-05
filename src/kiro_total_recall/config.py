@@ -151,6 +151,7 @@ class IndexingConfig:
     """Indexing behavior configuration."""
 
     throttle_ms: int = 0  # Sleep between batches (0 = full speed)
+    rescan_interval_minutes: int = 10  # Minutes between automatic rescans (0 = disabled)
 
 
 @dataclass
@@ -209,3 +210,68 @@ def get_config() -> Config:
 
     # Use hardcoded defaults
     return Config()
+
+
+def reload_config() -> tuple[Config, Config]:
+    """Reload configuration from disk, clearing the cache.
+
+    Returns:
+        Tuple of (old_config, new_config)
+    """
+    old_config = get_config()
+    get_config.cache_clear()
+    new_config = get_config()
+    return old_config, new_config
+
+
+def diff_configs(old: Config, new: Config) -> list[dict]:
+    """Compare two configs and return a list of changes with impact assessment.
+
+    Returns list of dicts: {key, old, new, impact}
+    impact is "safe" (hot-reloadable) or "requires_reindex"
+    """
+    changes = []
+
+    # Embedding settings that require reindex
+    reindex_keys = [
+        ("embedding.backend", old.embedding.backend, new.embedding.backend),
+        ("embedding.model", old.embedding.model, new.embedding.model),
+        ("embedding.dimensions", old.embedding.dimensions, new.embedding.dimensions),
+        ("embedding.api_base", old.embedding.api_base, new.embedding.api_base),
+    ]
+
+    # Settings that are safe to hot-reload
+    safe_keys = [
+        ("embedding.batch_size", old.embedding.batch_size, new.embedding.batch_size),
+        ("embedding.api_key", old.embedding.api_key, new.embedding.api_key),
+        ("indexing.throttle_ms", old.indexing.throttle_ms, new.indexing.throttle_ms),
+        ("indexing.rescan_interval_minutes", old.indexing.rescan_interval_minutes, new.indexing.rescan_interval_minutes),
+        ("search.default_threshold", old.search.default_threshold, new.search.default_threshold),
+        ("search.default_max_results", old.search.default_max_results, new.search.default_max_results),
+        ("search.default_context_window", old.search.default_context_window, new.search.default_context_window),
+        ("memory.fraction", old.memory.fraction, new.memory.fraction),
+        ("memory.limit_mb", old.memory.limit_mb, new.memory.limit_mb),
+        ("server.leader_port", old.server.leader_port, new.server.leader_port),
+        ("sources.cli.enabled", old.cli.enabled, new.cli.enabled),
+        ("sources.ide.enabled", old.ide.enabled, new.ide.enabled),
+    ]
+
+    for key, old_val, new_val in reindex_keys:
+        if old_val != new_val:
+            changes.append({
+                "key": key,
+                "old": old_val if old_val != "" else None,
+                "new": new_val if new_val != "" else None,
+                "impact": "requires_reindex",
+            })
+
+    for key, old_val, new_val in safe_keys:
+        if old_val != new_val:
+            changes.append({
+                "key": key,
+                "old": old_val,
+                "new": new_val,
+                "impact": "safe",
+            })
+
+    return changes

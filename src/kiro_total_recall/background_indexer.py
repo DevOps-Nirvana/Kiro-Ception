@@ -110,6 +110,7 @@ class BackgroundIndexer:
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._reindex_event = threading.Event()
+        self._rescan_event = threading.Event()
         self._cache: EmbeddingCache | None = None
         self._backend: EmbeddingBackend | None = None
         self._lock = threading.Lock()
@@ -143,12 +144,22 @@ class BackgroundIndexer:
     def trigger_reindex(self):
         """Trigger a full reindex (clears session state)."""
         self._reindex_event.set()
-        # If idle, restart the loop
-        if self._status.state == IndexerState.IDLE:
+        # If the thread is not alive (e.g., rescan_interval=0), restart it
+        if not self._thread or not self._thread.is_alive():
+            self.start()
+
+    def trigger_rescan(self):
+        """Trigger an immediate rescan without clearing session state.
+
+        Wakes the periodic rescan loop early. Only new/changed files are processed.
+        """
+        self._rescan_event.set()
+        # If the thread is not alive, restart it
+        if not self._thread or not self._thread.is_alive():
             self.start()
 
     def _run(self):
-        """Main indexer loop."""
+        """Main indexer loop. Runs initial scan, then rescans periodically."""
         try:
             self._status.state = IndexerState.STARTING
             self._status.started_at = time.time()
@@ -168,8 +179,52 @@ class BackgroundIndexer:
                 self._cache.clear_session_state()
                 logger.info("Force reindex: session state cleared")
 
-            # Run indexing
+            # Run initial indexing
             self._index_loop(config)
+
+            # Periodic rescan loop
+            rescan_interval = config.indexing.rescan_interval_minutes * 60
+            while not self._stop_event.is_set() and rescan_interval > 0:
+                # Wait for rescan interval, or until triggered by reindex/rescan
+                # Use a short poll loop so we can check both events
+                wait_start = time.time()
+                while not self._stop_event.is_set():
+                    elapsed_wait = time.time() - wait_start
+                    if elapsed_wait >= rescan_interval:
+                        break
+                    if self._reindex_event.is_set() or self._rescan_event.is_set():
+                        break
+                    time.sleep(1)
+
+                if self._stop_event.is_set():
+                    break
+
+                # Check for force reindex (clears state)
+                if self._reindex_event.is_set():
+                    self._reindex_event.clear()
+                    self._cache.clear_session_state()
+                    logger.info("Force reindex triggered during rescan wait")
+
+                # Clear rescan event if set
+                self._rescan_event.clear()
+
+                # Re-read config in case it changed
+                config = get_config()
+                rescan_interval = config.indexing.rescan_interval_minutes * 60
+
+                # Reset status for new scan
+                self._status.state = IndexerState.DISCOVERING
+                self._status.sessions_processed = 0
+                self._status.sessions_unchanged = 0
+                self._status.messages_embedded = 0
+                self._status.messages_cached = 0
+                self._status.messages_skipped = 0
+                self._status.errors = 0
+                self._status.started_at = time.time()
+                self._status.completed_at = None
+
+                # Run rescan
+                self._index_loop(config)
 
         except Exception as e:
             self._status.state = IndexerState.ERROR
