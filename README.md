@@ -1,315 +1,89 @@
 # Kiro Ception
 
-Ever told Kiro "like we discussed yesterday" only to realize... it has no idea?
+**Your AI finally remembers what you said last Tuesday.**
 
-**Kiro Ception** gives Kiro the memory it's missing.
+Kiro Ception gives your Kiro IDE a long-term memory — semantic search across *all* your past conversations, across every project, every session, CLI and IDE alike. It's like `Ctrl+F` for your brain, except it actually understands what you meant, not just what you typed.
 
-## The Problem
+> *"We discussed this already..."* — You, talking to Kiro, which has now actually indexed that conversation.
 
-1. **Sessions Are Isolated**: Each Kiro session starts fresh. Yesterday's architecture discussion? Gone.
-2. **Projects Don't Share Knowledge**: Your preferences (testing style, package managers, patterns) aren't remembered across projects.
-3. **CLI and IDE Are Separate**: Conversations in Kiro CLI don't connect to Kiro IDE.
+## How It Works
 
-**Kiro Ception indexes every Kiro conversation and provides semantic search.** Find discussions by *meaning*, not just keywords.
+Kiro Ception is an [MCP Power](https://kiro.dev/docs/powers/) that runs as a background service alongside your Kiro IDE. It:
 
-## Quickstart
+1. **Discovers** all Kiro CLI and IDE session files on your machine
+2. **Extracts** meaningful messages (filtering out system prompts, boilerplate, and code blocks)
+3. **Embeds** each message into a vector representation using your configured model
+4. **Indexes** everything into an in-memory numpy matrix for instant cosine similarity search
+5. **Serves** search results via MCP tools that Kiro can call naturally during conversation
 
-### As a Kiro Power (Recommended, IDE only)
+Search results include surrounding context (messages before/after each match), relevance scores, workspace origin, and pagination — so Kiro gets the full picture of what was discussed.
 
-1. In Kiro IDE: Powers panel → **Add power from GitHub**
-2. Enter: `https://github.com/farleyfarley/kiro-ception`
-3. The power activates automatically when you mention "recall", "remember", "remind me", "what did we", or reference past conversations
+### Architecture Highlights
 
-### Manual MCP Setup (CLI and IDE)
+- **Non-blocking**: Heavy work (indexing, embedding) runs in background daemon threads. The MCP server responds instantly.
+- **Leader-follower**: Multiple Kiro windows share one index in RAM. The first process becomes the leader; others proxy via localhost HTTP, reduces overhead when having multiple windows open.
+- **Incremental**: File mtime tracking skips unchanged sessions. Text hash deduplication avoids re-embedding identical content.
+- **Crash-safe**: Database is SQLite with WAL mode. Lose at most one in-flight message on Ctrl+C/crash/Kiro quit.
+- **Eager cold-start**: On startup, loads the index from existing SQLite cache in under 1 second (if you've run before).
 
-Add to `~/.kiro/settings/mcp.json` (this config is shared by both CLI and IDE):
+## Installation
+
+### Prerequisites
+
+- **Python 3.11+** (3.12, 3.13 also supported and tested officially)
+- **[uv](https://docs.astral.sh/uv/getting-started/installation/)** — fast Python package manager
+
+### Install from Source
+
+```bash
+git clone https://github.com/farleyfarley/kiro-ception.git
+cd kiro-ception
+uv sync
+```
+
+That's it. All dependencies are resolved and installed into `.venv/`.
+
+### Register as a Kiro Power
+
+Add to your Kiro MCP configuration (`~/.kiro/settings/mcp.json`):
 
 ```json
 {
   "mcpServers": {
     "kiro-ception": {
-      "command": "uvx",
-      "args": ["--from", "git+https://github.com/farleyfarley/kiro-ception", "kiro-ception"]
+      "command": "/path/to/kiro-ception/.venv/bin/kiro-ception"
     }
   }
 }
 ```
 
-**Restart Kiro CLI/IDE** after adding. MCP servers are only loaded at startup.
-
-### Verify Installation
-
-In Kiro CLI: `/mcp` should list `kiro-ception`
-
-In Kiro IDE: Check the MCP Servers panel
-
-## How It Works
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         Kiro CLI & IDE                                  │
-│  ┌──────────────────────────┐    ┌──────────────────────────────────┐   │
-│  │  CLI: SQLite DB          │    │  IDE: .chat + workspace-sessions │   │
-│  │  ~/Library/App Support/  │    │  ~/Library/App Support/Kiro/     │   │
-│  │  kiro-cli/data.sqlite3   │    │  User/globalStorage/...          │   │
-│  └────────────┬─────────────┘    └─────────────┬────────────────────┘   │
-│               └────────────────┬───────────────┘                        │
-│                                ▼                                        │
-│                    ┌───────────────────────┐                            │
-│                    │   Unified Loader      │                            │
-│                    └───────────┬───────────┘                            │
-└────────────────────────────────┼────────────────────────────────────────┘
-                                 ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                      Kiro Ception                                  │
-│                                                                         │
-│  ┌──────────────────┐  ┌─────────────────┐  ┌───────────────────────┐  │
-│  │ Background       │  │ In-Memory       │  │ MCP Server            │  │
-│  │ Indexer (thread) │─▶│ Search Index    │◀─│ 6 tools               │  │
-│  └────────┬─────────┘  │ (numpy matrix)  │  └───────────────────────┘  │
-│           │             └─────────────────┘                             │
-│           ▼                                                             │
-│  ┌──────────────────┐  ┌─────────────────────────────────────────────┐  │
-│  │ Embedding        │  │ SQLite Cache (embeddings + metadata +       │  │
-│  │ Backend          │  │  session state + execution index)           │  │
-│  └──────────────────┘  └─────────────────────────────────────────────┘  │
-│           │                                                             │
-│   ┌───────┴───────┐                                                    │
-│   ▼               ▼                                                     │
-│  sentence-    OpenAI-compatible                                         │
-│  transformers (Ollama/LM Studio/OpenAI)                                 │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
-### Architecture Highlights
-
-- **Non-blocking startup**: Server is immediately queryable. Indexing runs in a background thread.
-- **Leader-follower**: Multiple Kiro windows share one leader process (holds RAM index). Followers proxy requests via localhost HTTP. Automatic failover if leader dies.
-- **Streaming indexer**: Processes sessions one at a time — never loads all conversations into memory.
-- **SQLite cache**: Embeddings, metadata, session state, and execution index all in one atomic database. No more pickle blobs.
-- **Incremental**: Only new/changed files are processed. File mtime tracking skips unchanged sessions entirely.
-
-### The Index: Making Search Fast
-
-On startup, Kiro Ception:
-
-1. **Loads** existing embeddings from SQLite cache into a numpy matrix (instant)
-2. **Starts** background indexer thread to discover and embed new messages
-3. **Serves** searches immediately against whatever is already indexed
-
-The background indexer:
-- Discovers sessions from CLI (SQLite) and IDE (legacy .chat + workspace-sessions format)
-- Loads execution logs for full assistant responses
-- Embeds messages using the configured backend
-- Stores results atomically in SQLite (survives Ctrl+C)
-- Refreshes the in-memory search matrix every 60 seconds
-- **Rescans for new/changed sessions every 10 minutes** (configurable)
-
-## Features
-
-- **Semantic Search**: Find by meaning, not just keywords
-- **Dual Source**: Searches both CLI and IDE conversations (legacy + current format)
-- **Pluggable Embedding Backends**: Use local sentence-transformers (default) or any OpenAI-compatible API (Ollama, LM Studio, OpenAI, etc.)
-- **Background Indexing**: Non-blocking — search works immediately, new results appear as indexing progresses
-- **Leader-Follower**: Multiple Kiro windows share one index without duplicating RAM
-- **Cross-Machine Peering**: Federate search across computers with optional AES-256-GCM encryption
-- **Context Windows**: See surrounding messages for each match
-- **Date Filtering**: Filter by time range (ISO 8601)
-- **Incremental Indexing**: File-level mtime tracking — only processes changed sessions
-- **Automatic Cache Invalidation**: Changing model or backend creates a new cache automatically
-- **Throttling**: Configurable `throttle_ms` to reduce GPU load during active use
-- **Crash-Safe**: SQLite WAL mode with per-row writes — never loses progress
-
-## MCP Tools
-
-### Search Tools
-
-| Tool | Scope | Use Case |
-|------|-------|----------|
-| `search_project_history` | Current workspace | Bugs, decisions in *this* codebase |
-| `search_global_history` | All workspaces | Preferences, patterns across *all* work. Optional `source` param: `"all"` (default), `"cli"`, or `"ide"` |
-
-### Management Tools
-
-| Tool | Use Case |
-|------|----------|
-| `get_indexing_status` | Check indexing progress, rate, ETA, errors |
-| `rescan` | Pick up new/changed conversations. Use `full=True` to re-read all sessions |
-| `reload_config` | Re-read config file and apply safe changes without restart |
-| `get_config` | Show effective configuration, file paths, instance role, cache stats |
-
-### Parameters
-
-All search tools accept:
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `query` | required | Keywords or sentence to search |
-| `after` | none | Filter to messages on/after this date (inclusive). ISO 8601 format. |
-| `before` | none | Filter to messages before this date (exclusive). ISO 8601 format. |
-| `context_size` | 3 | Messages before AND after each match |
-| `threshold` | 0.2 | Minimum similarity (0-1, higher = stricter) |
-| `max_results` | 10 | Maximum results to return |
-| `offset` | 0 | Skip results (for pagination) |
-
-Additionally, `search_global_history` accepts:
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `source` | `"all"` | Filter by source: `"all"`, `"cli"`, or `"ide"`. Only set to `"cli"` or `"ide"` if the user explicitly asks. |
-
-### Workspace Detection
-
-`search_project_history` scopes results to the current workspace. The workspace is determined by (in priority order):
-
-1. `search.workspace_dir` in config (if set)
-2. `KIRO_WORKSPACE` environment variable (set automatically by Kiro IDE/CLI)
-3. Current working directory
-
-### Date Filtering Examples
-
-```python
-# Messages from a specific day
-search_project_history(query="auth bug", after="2026-06-01", before="2026-06-02")
-
-# Messages from the past week
-search_project_history(query="refactoring", after="2026-05-28")
-
-# Messages in June
-search_project_history(query="database", after="2026-06-01", before="2026-07-01")
-```
-
-### Response Structure
-
-```json
-{
-  "results": [
-    {
-      "matched_message": {
-        "role": "assistant",
-        "content": "To fix the authentication bug...",
-        "timestamp": "2026-06-01T10:30:00",
-        "workspace": "/Users/dev/myproject",
-        "session_id": "abc123",
-        "uuid": "msg-456",
-        "source": "ide"
-      },
-      "score": 0.8542,
-      "context": [
-        {"role": "user", "content": "How do I fix this auth bug?", "timestamp": "...", "is_match": false},
-        {"role": "assistant", "content": "To fix the authentication bug...", "timestamp": "...", "is_match": true}
-      ]
-    }
-  ],
-  "query": "authentication bug fix",
-  "total_matches": 25,
-  "offset": 0,
-  "has_more": true,
-  "hint": "Showing 1-10 of 25 matches. Use offset: 10 for more."
-}
-```
-
-## Usage Examples
-
-Just ask naturally:
-
-```
-"How did we fix that auth bug?"
-"Remind me what we implemented for incidentfox"
-"What's my usual approach to error handling?"
-"What did we decide about the database schema last week?"
-"Where did we leave off with the payment integration?"
-```
-
-Or use tools directly:
-
-```python
-search_project_history(query="authentication bug fix")
-search_global_history(query="React component patterns")
-search_global_history(query="deployment", source="ide", after="2026-06-01")
-```
+Replace `/path/to/kiro-ception` with the actual clone location. Restart Kiro to pick it up.
 
 ## Configuration
 
-Create `~/.config/kiro-ception/config.toml` to customize:
+Create `~/.config/kiro-ception/config.toml` to customize behavior. If this file doesn't exist, sensible defaults are used (local CPU-based embeddings with `all-MiniLM-L6-v2`).
 
-```toml
-[sources.cli]
-enabled = true
-paths = [
-    "~/Library/Application Support/kiro-cli/data.sqlite3",
-    "~/.local/share/kiro-cli/data.sqlite3",
-    "~/AppData/Roaming/kiro-cli/data.sqlite3",
-]
+A full annotated default config is in [`config.default.toml`](config.default.toml) — copy it as a starting point:
 
-[sources.ide]
-enabled = true
-patterns = [
-    "~/Library/Application Support/Kiro/User/globalStorage/kiro.kiroagent/*/*.chat",
-    "~/.config/Kiro/User/globalStorage/kiro.kiroagent/*/*.chat",
-    "~/AppData/Roaming/Kiro/User/globalStorage/kiro.kiroagent/*/*.chat",
-]
-
-[embedding]
-# Backend: "sentence-transformers" (default) or "openai-compatible"
-backend = "sentence-transformers"
-model = "all-MiniLM-L6-v2"
-cache_dir = "~/.cache/kiro-ception"
-batch_size = 16  # Messages per embedding request
-
-[search]
-default_threshold = 0.2
-default_max_results = 10
-default_context_window = 3
-# workspace_dir = "~/projects/my-app"  # Override workspace for search_project_history
-
-[memory]
-fraction = 0.33  # Use 1/3 of RAM
-# limit_mb = 512  # Or set explicit limit
-
-[indexing]
-throttle_ms = 0  # Sleep between batches (0 = full speed, 500+ = gentle)
-rescan_interval_minutes = 10  # Auto-rescan for new messages (0 = disabled)
-
-[server]
-leader_port = 19742  # Localhost port for leader-follower communication
-
-[peers]
-# Cross-machine federation (disabled by default)
-enabled = false
-nodes = ["other-machine:19742"]  # Peers to search
-secret = "shared-passphrase"     # Encrypt traffic (optional, omit for plaintext)
-timeout_seconds = 5
+```bash
+mkdir -p ~/.config/kiro-ception
+cp config.default.toml ~/.config/kiro-ception/config.toml
 ```
 
-### Embedding Backends
+### Minimal Config (Zero Setup)
 
-Kiro Ception supports two embedding backends:
+With no config file at all, Kiro Ception uses:
 
-#### sentence-transformers (default)
+- **Backend**: `sentence-transformers` (local, CPU-based, no API/GPU needed)
+- **Model**: `all-MiniLM-L6-v2` (384 dimensions, ~80MB download on first run)
+- **Sources**: Auto-discovers Kiro CLI and IDE conversations in both old and new formats
+- **Memory**: Uses up to 1/3 of available RAM for the index (by default)
 
-Uses the [sentence-transformers](https://www.sbert.net/) library to run embedding models locally in-process. No external service needed — the model is downloaded once from Hugging Face and cached.
+This is a good starting point — it runs entirely on CPU with no external dependencies.
 
-```toml
-[embedding]
-backend = "sentence-transformers"
-model = "all-MiniLM-L6-v2"  # 22M params, 384 dims, fast on CPU
-```
+### GPU-Accelerated with Ollama (Recommended for Power Users)
 
-#### openai-compatible (Ollama, LM Studio, OpenAI, etc.)
-
-Connects to any service exposing an OpenAI-compatible `/v1/embeddings` endpoint. This enables GPU-accelerated models via Ollama or LM Studio locally, or hosted providers like OpenAI remotely.
-
-| Setting | Description | Example |
-|---------|-------------|---------|
-| `backend` | Must be `"openai-compatible"` | |
-| `model` | Model name to pass in the API request | `"qwen3-embedding:4b"` |
-| `api_base` | Base URL of the API (without `/embeddings`) | `"http://localhost:11434/v1"` |
-| `api_key` | API key (optional for local, required for hosted) | `"sk-..."` |
-| `dimensions` | Output embedding dimensions (optional, omit for model default) | `1024` |
-| `batch_size` | Messages per API request (1 for large models, 16+ for small) | `1` |
-
-**Ollama example** (local GPU, no API key needed):
+If you have Ollama running with a GPU, you can use much larger, higher-quality embedding models by putting something like the following in your config file:
 
 ```toml
 [embedding]
@@ -320,18 +94,25 @@ dimensions = 1024
 batch_size = 1
 ```
 
-Setup: `ollama pull qwen3-embedding:4b`
+**Setup:**
 
-**LM Studio example** (local GPU):
+```bash
+# Install Ollama (if not already): https://ollama.com
+ollama pull qwen3-embedding:4b
+```
+
+This gives significantly better search quality than MiniLM, especially for nuanced queries. The `4b` model runs comfortably on a 6GB+ GPU. For even better quality with more VRAM:
 
 ```toml
 [embedding]
 backend = "openai-compatible"
-model = "nomic-embed-text-v1.5"
-api_base = "http://localhost:1234/v1"
+model = "qwen3-embedding:8b"
+api_base = "http://localhost:11434/v1"
+dimensions = 2048
+batch_size = 1
 ```
 
-**OpenAI example** (remote, requires API key):
+### OpenAI / Hosted Providers
 
 ```toml
 [embedding]
@@ -342,202 +123,176 @@ api_key = "sk-..."
 dimensions = 1024
 ```
 
-#### Switching backends or models
+### LM Studio
 
-When you change the backend, model, or dimensions in config, Kiro Ception automatically detects the change and creates a new cache. Existing embeddings in the old cache are preserved (in case you switch back).
+```toml
+[embedding]
+backend = "openai-compatible"
+model = "your-model-name"
+api_base = "http://localhost:1234/v1"
+dimensions = 768
+```
 
-No manual intervention is needed — just update the config and restart.
+## MCP Tools
 
-#### Which model should I use?
+Kiro can call these tools naturally during conversation:
 
-| Model | Backend | Dims | Speed | Quality | Notes |
-|-------|---------|------|-------|---------|-------|
-| `all-MiniLM-L6-v2` | sentence-transformers | 384 | Fast (CPU) | Good | Default, no setup needed |
-| `nomic-embed-text` | Ollama | 768 | Fast (GPU) | Better | 137M params, 8K context |
-| `mxbai-embed-large` | Ollama | 1024 | Medium | Better | 335M params |
-| `qwen3-embedding:4b` | Ollama | up to 4096 | Medium | Very good | 4B params, 40K context |
-| `qwen3-embedding:8b` | Ollama | up to 4096 | Slower | Best | 8B params, 32K context, #1 MTEB |
+| Tool | Purpose |
+|------|---------|
+| `search_project_history` | Search conversations scoped to the current workspace |
+| `search_global_history` | Search across all workspaces (supports `source` filter: all/cli/ide) |
+| `get_indexing_status` | Check indexer progress, rate, errors, ETA |
+| `rescan` | Trigger a rescan for new sessions (`full=True` to re-read everything) |
+| `get_config` | Show effective config, paths, cache stats, instance role, etc |
+| `reload_config` | Hot-reload config from disk without requiring restart of Kiro |
 
-If you have a GPU and Ollama installed, `qwen3-embedding:4b` with `dimensions = 1024` is a great balance of quality and speed.
+### Search Parameters
 
-## Multi-Instance (Leader-Follower)
+Both search tools accept:
 
-When multiple Kiro windows are open, each spawns its own MCP server process. To avoid duplicating RAM and indexing work:
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `query` | *(required)* | Natural language search query |
+| `after` | — | Only messages on/after this date (ISO 8601) |
+| `before` | — | Only messages before this date (ISO 8601) |
+| `context_size` | 3 | Messages before/after each match to include |
+| `threshold` | 0.2 | Minimum similarity score (0–1) |
+| `max_results` | 10 | Maximum results to return |
+| `offset` | 0 | Skip results for pagination |
 
-- **First instance** becomes the **leader**: holds the numpy search matrix in RAM, runs the background indexer, listens on `localhost:19742`
-- **Additional instances** become **followers**: forward all requests to the leader via HTTP, use zero RAM for embeddings
-- **Automatic failover**: if the leader dies, the next request from a follower promotes it to leader
+## Technologies & Libraries
 
-Use `get_config` to check the current instance role and leader port.
+| Component | Library | Purpose |
+|-----------|---------|---------|
+| MCP Server | [mcp](https://github.com/modelcontextprotocol/python-sdk) (FastMCP) | Exposes tools to Kiro via Model Context Protocol |
+| Embedding (local) | [sentence-transformers](https://www.sbert.net/) | Local CPU/GPU embeddings (default: all-MiniLM-L6-v2) |
+| Embedding (API) | [requests](https://docs.python-requests.org/) | OpenAI-compatible HTTP API for Ollama/LM Studio/OpenAI |
+| Vector Search | [numpy](https://numpy.org/) | In-memory cosine similarity via dot product |
+| Data Models | [Pydantic](https://docs.pydantic.dev/) | Typed data validation and serialization |
+| Cache | SQLite (stdlib) | Persistent embedding + metadata storage (WAL mode) |
+| Process Coordination | [filelock](https://py-filelock.readthedocs.io/) | Leader-follower election via file locks |
+| Encryption | [cryptography](https://cryptography.io/) + [argon2-cffi](https://argon2-cffi.readthedocs.io/) | AES-256-GCM peer encryption with Argon2id key derivation |
+| Build | [hatchling](https://hatch.pypa.io/) | PEP 517 build backend |
+| Package Manager | [uv](https://docs.astral.sh/uv/) | Fast dependency resolution and venv management |
+| Linter/Formatter | [ruff](https://docs.astral.sh/ruff/) | Linting and formatting |
+| Tests | [pytest](https://pytest.org/) | Test framework (245+ tests) |
 
-## Cross-Machine Peering
+## Optional Features
 
-You can federate search across multiple computers. Each machine maintains its own independent index and serves its own conversations. When peering is enabled, search queries are fanned out to remote peers in parallel and results are merged.
+### Peer Federation
 
-### Setup
-
-On **both machines**, add to `~/.config/kiro-ception/config.toml`:
+Search across multiple machines (e.g., your laptop + desktop). Each machine runs its own independent index. When you search, queries fan out to all peers in parallel and results are merged.
 
 ```toml
 [peers]
 enabled = true
-nodes = ["other-machine:19742"]  # The other machine's address
-secret = "our-shared-passphrase"  # Same on both (optional, for encryption)
+nodes = ["192.168.1.50:19742", "workpc.tailscale:19742"]
+secret = "my-shared-passphrase"  # Optional: encrypts all peer traffic with AES-256-GCM
 timeout_seconds = 5
 ```
 
-Machine A's config points to Machine B, and vice versa.
+Peers communicate over HTTP. If `secret` is set, payloads are encrypted with AES-256-GCM (key derived via Argon2id from the passphrase). Both machines must use the same secret. Without a secret, traffic is plaintext — fine on VPNs or Tailscale or when local-only at your own house (up to you).
 
-### Networking
+### Memory Limits
 
-Peers communicate via HTTP on the leader port (default 19742). The machines need to be able to reach each other on that port. Options:
-
-- **Tailscale** (recommended): Zero-config VPN. Use Tailscale hostnames (e.g., `workpc.tail1234.ts.net:19742`). No firewall rules needed.
-- **Same LAN**: Use local IPs (e.g., `192.168.1.50:19742`). May need firewall rules.
-- **WireGuard/VPN**: Any VPN that gives both machines reachable IPs.
-
-### Encryption
-
-When `secret` is set, all peer traffic is encrypted with AES-256-GCM. The key is derived from the passphrase using Argon2id (memory-hard, brute-force resistant). Both peers must use the same passphrase.
-
-- **No secret**: plaintext HTTP (fine on Tailscale or trusted LAN)
-- **With secret**: encrypted payloads, peers with wrong/missing secret get 401 rejected
-
-### Behavior
-
-- Search queries are fanned out to all configured peers in parallel
-- Results are merged with local results, deduplicated by message UUID, sorted by score
-- If a peer is unreachable or times out, local results still return (graceful degradation)
-- Each machine indexes only its own local conversation files
-- Peers don't need the same embedding model — results are matched by score regardless of how they were embedded
-
-## Memory Management
-
-Kiro Ception limits in-memory index size to prevent excessive memory usage. By default, it uses 1/3 of physical RAM. When the limit is reached, the oldest sessions are excluded from the index (newest sessions are kept).
-
-Configure via `~/.config/kiro-ception/config.toml`:
+Control how much RAM the index uses:
 
 ```toml
 [memory]
-fraction = 0.33    # Use 1/3 of RAM (default)
-# limit_mb = 2048  # Or set an explicit limit in MB
-# limit_mb = 0     # Set to 0 to disable the memory limit entirely
+fraction = 0.33     # Use up to 1/3 of RAM (default)
+# limit_mb = 512    # Or set an explicit limit
+# limit_mb = 0      # Disable limit (use all available)
 ```
+
+### Indexing Throttle
+
+Reduce GPU/CPU load during active work:
+
+```toml
+[indexing]
+throttle_ms = 5000   # Sleep 5000ms (5 seconds) between embedding batches (default: 0)
+rescan_interval_minutes = 10  # Check for new sessions every 10 minutes (this is the default)
+```
+
+Once your initial index is built, it can be quite nice to add the throttle_ms value of 5-10 seconds (5000-10000) to ensure your computer runs quickly and your usage is not negatively affected.  This is especially valuable if you are using a large local GPU-based model (like the Qwen 8B embedding model).
+
+Secondarily, if you are trying to be sparing on battery life, and/or if you don't care about getting your index up to date so quickly, you can greatly increase the rescan interval to 60 minutes, OR you can disable this automated rescan/reindexing process by setting this to 0.
+
+
+## Performance
+
+| Metric | Value |
+|--------|-------|
+| First-time indexing (MiniLM) | ~4 minutes (4300+ sessions) |
+| First-time indexing (Qwen3-Embedding:4b) | ~35 minutes (4300+ sessions) |
+| First-time indexing (Qwen3-Embedding:8b) | ~70 minutes (4300+ sessions) |
+| Subsequent startups | <2 seconds |
+| Search latency | <10ms |
+| Index refresh (backgrounded) | Every 60 seconds |
+| Periodic rescan to update indexes (backgrounded) | Every 10 minutes |
+| Embedding rate | ~3–5 messages/second (qwen3-embedding:4b) |
 
 ## Troubleshooting
 
-### Search returns no results or "still loading"
+### "Backend not ready" or "still loading"
 
-On first startup (or after clearing the cache), indexing takes ~35 minutes for a large history. Use `get_indexing_status` to check progress. Search works immediately for already-indexed content.
+On first startup, the index eagerly loads from SQLite into RAM. If embeddings exist but metadata hasn't populated yet, you'll see a "still loading" message. Retry in a few seconds.  Also, as your size of your embeddings increases this may make it take a little longer.  I have six months of Kiro work across 4300 chat documents with an (currently) 300MB embedding db, and it takes 10-15 seconds to load the index into RAM.
 
-If you see "still loading" with an embedding count, the data exists but hasn't been loaded into the search matrix yet — retry in a few seconds.
+### Empty search results
 
-### Stale results (missing recent conversations)
+- Check `get_indexing_status` — indexing may still be in progress
+- Use `rescan()` to immediately pick up recent conversations
+- Verify your config with `get_config`
 
-The periodic rescan runs every 10 minutes. To pick up conversations immediately, use `rescan`. If sessions are still missing, use `rescan(full=True)` to re-read all files ignoring the mtime cache.
+### Embedding errors / timeouts
 
-### "Failed to embed query" error
+- For Ollama: ensure it's running (`ollama ps`) and the model is pulled
+- Very long messages (>50K chars) may timeout — they're skipped with a warning
+- Check your "Kiro Powers" outputs for logs/errors
 
-The embedding backend (Ollama/LM Studio/OpenAI) is unreachable or crashed. Check:
-- Ollama: `ollama ps` (should show a running model)
-- If the model was unloaded: `ollama pull <model-name>` to reload it
-- If using a remote API: check network connectivity and API key validity
+### Config changes not taking effect
 
-Search will automatically recover once the backend is back — no restart needed.
+- Use `reload_config` tool (applies safe changes immediately)
+- Model/backend/dimensions changes require `rescan(full=True)`
 
-### "Leader unavailable and could not promote"
+### Multiple windows fighting
 
-This means all leader-follower communication failed. Usually happens if:
-- The leader process crashed but left a stale lock file
-- Port 19742 is blocked by a firewall or another process
+The leader-follower pattern handles this automatically. Use `get_config` to see which process is leader. If a leader dies, the next request auto-promotes a follower.
 
-Fix: restart Kiro. The stale lock is auto-cleaned on the next startup. If the port is in use by another process, set a different port in config:
-```toml
-[server]
-leader_port = 19743
-```
+### Nuclear option
 
-### High error count during indexing
-
-Check `get_indexing_status` — the `last_error` field shows what went wrong. Common causes:
-- Ollama running out of memory on very long messages (they're retried individually, then skipped)
-- Corrupt session files on disk (skipped, other sessions continue)
-- Network timeouts to remote embedding API
-
-Errors don't stop indexing — the indexer skips problematic messages and continues. Use `get_indexing_status` to see `messages_skipped` count.
-
-### Multiple Kiro windows behaving oddly
-
-Only one window is the "leader" (holds RAM index, runs indexer). Others are "followers" that proxy to it. Use `get_config` to see the `instance` section showing which role the current window has.
-
-If a window is stuck as a follower with a dead leader: close all Kiro windows, delete `~/.cache/kiro-ception/leader.lock`, and reopen.
-
-### Peer search not returning remote results
-
-Check `get_config` — the `peers` section shows if peering is enabled and what nodes are configured. Common issues:
-- Peer machine is offline or Kiro isn't running on it
-- Firewall blocking port 19742 (try `curl http://peer-address:19742/health`)
-- Mismatched `secret` between machines (one encrypted, other not → 401 rejection)
-- Peer not yet indexed (just started, still building its index)
-
-Peers that timeout or fail are silently skipped — local results always return regardless.
-
-### Resetting the cache (nuclear option)
-
-If the database is corrupt, search returns garbage, or you've changed embedding dimensions and want a clean start:
+If the database is corrupt or everything is broken, find your file path to your database calling the `get_config` tool.  Then, once you find it, uninstall this power (or disable the MCP) then remove your database, then reinstall this power (or re-enable MCP).
 
 ```bash
 rm -rf ~/.cache/kiro-ception/
 ```
 
-Then restart Kiro. The index will rebuild from scratch (all conversations are re-read and re-embedded). This takes ~35 minutes for 4000+ sessions.
+When you Restart Kiro (or re-enable  MCP) it will rebuild the embeddings database from scratch.
 
-### Finding cache/config paths
+## Development
 
-Use `get_config` — the `paths` section shows the exact file locations for your system.
-
-## Project Structure
-
-```
-kiro-ception/
-├── POWER.md                      # Kiro Power manifest + steering
-├── mcp.json                      # MCP server config for Power
-├── config.default.toml           # Default configuration
-├── src/kiro_ception/
-│   ├── server.py                 # FastMCP server, tool definitions, search
-│   ├── background_indexer.py     # Background thread indexing + status
-│   ├── search_utils.py           # Pure search post-processing functions
-│   ├── peers.py                  # Cross-machine federation (fan-out, merge)
-│   ├── peer_crypto.py            # Argon2id + AES-256-GCM encryption
-│   ├── leader.py                 # Leader-follower coordination
-│   ├── cache.py                  # SQLite-backed embedding + metadata cache
-│   ├── embeddings.py             # Embedding backend abstraction
-│   ├── indexer.py                # Memory limits, session selection
-│   ├── loader.py                 # Unified loader (CLI + IDE)
-│   ├── cli_loader.py             # SQLite parsing for CLI
-│   ├── ide_loader.py             # IDE .chat + workspace-sessions + execution logs
-│   ├── config.py                 # Configuration management
-│   └── models.py                 # Pydantic data models
-├── tests/                        # Comprehensive test suite (270 tests)
-├── pyproject.toml
-└── LICENSE
+```bash
+uv sync                         # Install deps
+uv run pytest tests/ -q         # Run tests (245+, ~10s)
+uv run ruff check src/          # Lint
+uv run kiro-ception             # Run MCP server locally
 ```
 
-## Technical Details
+## Data Locations
 
-| Component | Technology |
-|-----------|------------|
-| Embedding (default) | [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) via sentence-transformers |
-| Embedding (optional) | Any OpenAI-compatible API (Ollama, LM Studio, OpenAI, etc.) |
-| Vector search | Cosine similarity via NumPy dot product (in-memory matrix) |
-| Cache/storage | SQLite with WAL mode (atomic, crash-safe) |
-| Inter-process | Leader-follower via localhost HTTP + file lock |
-| Peer encryption | AES-256-GCM with Argon2id key derivation (via `cryptography` + `argon2-cffi`) |
-| MCP framework | [FastMCP](https://github.com/jlowin/fastmcp) |
-| Package manager | [uv](https://docs.astral.sh/uv/) |
+| Path | Contents |
+|------|----------|
+| `~/.config/kiro-ception/config.toml` | User configuration |
+| `~/.cache/kiro-ception/cache_<hash>.db` | SQLite database (embeddings, metadata) |
+| `~/.cache/kiro-ception/leader.lock` | Leader election file lock |
+| `~/.cache/kiro-ception/leader.json` | Leader port/PID info for followers |
+
+The cache DB filename includes a hash of the backend configuration. Changing model/backend/dimensions creates a new DB file (old ones are preserved for rollback).
 
 ## License
 
-[MIT License](LICENSE)
+MIT - See: [LICENSE](LICENSE).
 
-Some logic and the concept was inspired by [kiro-total-recall](https://github.com/danilop/kiro-total-recall) by Danilo Poccia.
+---
+
+*Originally inspired by the work of Danilo Poccia from [Kiro Total Recall](https://github.com/danilop/kiro-total-recall). Built to give Kiro the memory it deserves.*
