@@ -21,6 +21,8 @@ This is a Kiro MCP Power (kiro-ception) that provides semantic search across con
 | `search_utils.py` | Pure post-processing: deduplication, context windows, pagination, date parsing |
 | `background_indexer.py` | Background thread: discovers sessions, embeds messages, periodic rescan |
 | `leader.py` | File-lock based leader election, HTTP server for followers, failover |
+| `peers.py` | Cross-machine federation: fan-out search, result merging, encrypted HTTP |
+| `peer_crypto.py` | Argon2id key derivation, AES-256-GCM encrypt/decrypt |
 | `cache.py` | SQLite cache: embeddings, message metadata, session state, execution index |
 | `embeddings.py` | Backend abstraction: sentence-transformers or OpenAI-compatible API |
 | `ide_loader.py` | Loads IDE conversations (legacy .chat + workspace-sessions + execution logs) |
@@ -75,5 +77,7 @@ On leader initialization:
 - **Code block placeholders**: `[code:python]` preserves language signal without embedding thousands of code tokens
 - **60-second matrix refresh**: Balances search freshness vs memory churn
 - **10-minute rescan interval**: Picks up new conversations without hammering the filesystem
-- **No separate CLI indexer**: Background indexing in the MCP server handles everything; `force_reindex` tool covers manual rebuilds
+- **No separate CLI indexer**: Background indexing in the MCP server handles everything; `rescan(full=True)` tool covers manual rebuilds
 - **search_utils.py extraction**: Pure functions for post-processing (dedup, pagination, context) are separated from server.py for independent unit testing
+- **Peer federation via HTTP fan-out**: Each machine maintains its own index. Peers are queried in parallel and results are merged by score. No shared state, no sync conflicts.
+- **Optional AES-256-GCM encryption for peers**: Key derived via Argon2id (memory-hard KDF). Both peers derive the same key from the same passphrase independently — no key exchange protocol needed.

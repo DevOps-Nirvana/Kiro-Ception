@@ -48,31 +48,41 @@ All persistent data lives in `~/.cache/kiro-ception/`:
 
 ### Stale results (missing recent conversations)
 - Periodic rescan runs every 10 minutes
-- Use `rescan_now` tool for immediate pickup
+- Use `rescan` tool for immediate pickup
 - Check `get_indexing_status` to see if indexing is active
 
 ### Config changes not taking effect
 - Use `reload_config` tool (applies safe changes immediately)
-- Model/backend/dimensions changes require `force_reindex`
+- Model/backend/dimensions changes require `rescan(full=True)`
 - The rescan interval is re-read on each loop iteration
 
 ### Multiple windows / leader-follower issues
-- Use `get_instance_role` to check which process is leader
+- Use `get_config` to check which process is leader (see `instance` section)
 - If leader dies, next request from a follower auto-promotes it
 - Leader lock file: `~/.cache/kiro-ception/leader.lock`
 - If lock is stale (process dead), it's auto-cleaned on next startup
+
+### Peer federation issues
+- Use `get_config` to verify `peers` section shows enabled=true and correct nodes
+- Test connectivity: `curl http://peer-address:19742/health` should return `{"status":"ok"}`
+- If using encryption: both machines MUST have the same `secret` value
+- Mismatched secret → 401 rejection (logged as warning on the receiving end)
+- Peers that timeout are silently skipped — local results always return
+- Each peer indexes independently — no shared state to corrupt
 
 ## Index Health Checks
 
 Via MCP tools:
 - `get_indexing_status` — see state, progress, errors, rate
-- `get_config` — verify embedding count, cache path, session count
-- `get_instance_role` — confirm leader is active and on expected port
+- `get_config` — verify embedding count, cache path, session count, instance role
 
 ## Forcing a Clean Slate
 
-If something is fundamentally broken:
+For most issues, `rescan(full=True)` is sufficient — it re-reads all sessions
+but preserves existing embeddings.
+
+If something is fundamentally broken (corrupt database, wrong dimensions cached):
 ```bash
 rm -rf ~/.cache/kiro-ception/
 ```
-Then restart Kiro — it will rebuild everything from scratch.
+Then restart Kiro — it will rebuild everything from scratch (~35 minutes for initial embed).

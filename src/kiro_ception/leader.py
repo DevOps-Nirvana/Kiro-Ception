@@ -127,6 +127,18 @@ class LeaderInstance:
                 self.end_headers()
                 self.wfile.write(json.dumps(data).encode())
 
+            def _send_response_maybe_encrypted(self, data: dict, status: int = 200):
+                """Send response, encrypting if peer secret is configured."""
+                try:
+                    from .peers import encrypt_response_body
+                    body_bytes, content_type = encrypt_response_body(data)
+                    self.send_response(status)
+                    self.send_header("Content-Type", content_type)
+                    self.end_headers()
+                    self.wfile.write(body_bytes)
+                except ImportError:
+                    self._send_json(data, status)
+
             def _read_body(self) -> dict:
                 length = int(self.headers.get("Content-Length", 0))
                 if length == 0:
@@ -136,11 +148,27 @@ class LeaderInstance:
 
             def do_POST(self):
                 try:
-                    body = self._read_body()
+                    content_type = self.headers.get("Content-Type", "application/json")
+                    length = int(self.headers.get("Content-Length", 0))
+                    raw_body = self.rfile.read(length) if length > 0 else b"{}"
+
+                    # Decrypt if encrypted
+                    try:
+                        from .peers import decrypt_request_body, encrypt_response_body
+                        body = decrypt_request_body(raw_body, content_type)
+                    except PermissionError as e:
+                        self.send_response(401)
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(json.dumps({"error": str(e)}).encode())
+                        return
+                    except ImportError:
+                        # peers module not available, parse as JSON
+                        body = json.loads(raw_body) if raw_body else {}
 
                     if self.path == "/search":
                         result = leader_instance._search_handler(body)
-                        self._send_json(result)
+                        self._send_response_maybe_encrypted(result)
 
                     elif self.path == "/reindex":
                         from .background_indexer import get_background_indexer
@@ -164,9 +192,9 @@ class LeaderInstance:
                             "status": "config_reloaded" if changes else "no_changes",
                             "changes": changes,
                             "applied": [c["key"] for c in safe_changes],
-                            "deferred": [f"{c['key']} — requires force_reindex" for c in breaking_changes],
+                            "deferred": [f"{c['key']} — requires rescan(full=True)" for c in breaking_changes],
                             "warnings": [
-                                f"{c['key']} changed: {c['old']} → {c['new']}. Requires force_reindex."
+                                f"{c['key']} changed: {c['old']} → {c['new']}. Requires rescan(full=True)."
                                 for c in breaking_changes
                             ],
                         })

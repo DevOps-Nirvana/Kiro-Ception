@@ -131,13 +131,13 @@ User: "Is Kiro Ception fully indexed?"
 → get_indexing_status()
 
 User: "Pick up my recent conversations"
-→ rescan_now()
+→ rescan()
 
 User: "I changed the config, reload it"
 → reload_config()
 
 User: "Re-index everything from scratch"
-→ force_reindex()
+→ rescan(full=True)
 ```
 
 ## Available Tools
@@ -147,20 +147,16 @@ User: "Re-index everything from scratch"
 | Tool | Scope | Use Case |
 |------|-------|----------|
 | `search_project_history` | Current workspace | Bugs, decisions, implementations in *this* codebase |
-| `search_global_history` | All workspaces | User preferences, patterns across *all* work |
-| `search_cli_history` | CLI only | Conversations from Kiro CLI sessions |
-| `search_ide_history` | IDE only | Conversations from Kiro IDE sessions |
+| `search_global_history` | All workspaces | User preferences, patterns across *all* work. Optional `source` param: `"all"` (default), `"cli"`, or `"ide"` |
 
 ### Management Tools
 
 | Tool | Use Case |
 |------|----------|
 | `get_indexing_status` | Check indexing progress, rate, ETA, errors |
-| `rescan_now` | Trigger immediate rescan for new/changed conversations |
-| `force_reindex` | Clear session state and re-read ALL files (heavy, use sparingly) |
+| `rescan` | Pick up new/changed conversations. Use `full=True` to re-read all sessions (ignores mtime cache) |
 | `reload_config` | Re-read config file and apply safe changes without restart |
-| `get_config` | Show effective configuration (model, backend, cache stats) |
-| `get_instance_role` | Show if this instance is the leader or follower (debugging) |
+| `get_config` | Show effective configuration, file paths, instance role, cache stats |
 
 ## Parameters
 
@@ -172,6 +168,9 @@ All search tools accept:
 - `threshold` (default: 0.2): Minimum similarity (0-1)
 - `max_results` (default: 10): Results to return
 - `offset` (default: 0): Skip results for pagination
+
+Additionally, `search_global_history` accepts:
+- `source` (default: "all"): Filter by source — `"all"`, `"cli"`, or `"ide"`. Only use `"cli"` or `"ide"` if the user explicitly asks to search only CLI or IDE conversations.
 
 ## Date Filtering Examples
 
@@ -197,9 +196,10 @@ search_global_history(query="deployment issue", after="2026-06-03")
 - Higher scores (closer to 1.0) = better semantic matches
 - The `source` field shows whether a result is from CLI or IDE
 - If results seem incomplete, check `get_indexing_status` — indexing may still be in progress
-- Use `rescan_now` to immediately pick up recent conversations
+- Use `rescan()` to immediately pick up recent conversations
+- Use `rescan(full=True)` after changing message filter rules
 - Use `reload_config` after editing the config file
-- Use `force_reindex` after changing message filter rules (heavy operation)
 - For project-specific questions, prefer `search_project_history` (narrows to current workspace)
 - For cross-project or preference questions, use `search_global_history`
 - When the user mentions a specific project name, include it in the query
+- If the database is corrupt or search returns garbage, the user can reset with: `rm -rf ~/.cache/kiro-ception/` then restart Kiro

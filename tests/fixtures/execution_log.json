@@ -1,0 +1,65 @@
+{
+  "executionId": "exec-001-uuid",
+  "workflowType": "act",
+  "status": "completed",
+  "startTime": "2026-06-01T10:00:00.000Z",
+  "input": {},
+  "autonomyMode": "autopilot",
+  "chatSessionId": "session-abc-123",
+  "actions": [
+    {
+      "type": "action",
+      "executionId": "exec-001-uuid",
+      "actionId": "action-001",
+      "actionState": "completed",
+      "actionType": "readFile",
+      "output": {
+        "filePath": "/src/server.ts",
+        "content": "import express from 'express';"
+      },
+      "chatSessionId": "session-abc-123",
+      "emittedAt": 1717236000000
+    },
+    {
+      "type": "action",
+      "executionId": "exec-001-uuid",
+      "actionId": "action-002",
+      "actionState": "completed",
+      "actionType": "say",
+      "output": {
+        "message": "I've reviewed the server configuration. The main issue is that the connection pool size is set to 5, which is too low for your traffic. I recommend increasing it to at least 20.\n\nHere's the fix:\n\n```typescript\nconst pool = new Pool({\n  max: 20,\n  idleTimeoutMillis: 30000,\n  connectionTimeoutMillis: 2000,\n});\n```\n\nThis should resolve the connection timeout errors you're seeing under load."
+      },
+      "chatSessionId": "session-abc-123",
+      "emittedAt": 1717236060000
+    },
+    {
+      "type": "action",
+      "executionId": "exec-001-uuid",
+      "actionId": "action-003",
+      "actionState": "completed",
+      "actionType": "say",
+      "output": {
+        "message": "Done. I've updated the pool configuration and added error handling for connection timeouts."
+      },
+      "chatSessionId": "session-abc-123",
+      "emittedAt": 1717236120000
+    },
+    {
+      "type": "action",
+      "executionId": "exec-001-uuid",
+      "actionId": "action-004",
+      "actionState": "completed",
+      "actionType": "writeFile",
+      "output": {
+        "filePath": "/src/db.ts"
+      },
+      "chatSessionId": "session-abc-123",
+      "emittedAt": 1717236180000
+    }
+  ],
+  "context": [],
+  "result": {},
+  "endTime": "2026-06-01T10:05:00.000Z",
+  "usageSummary": {},
+  "contextUsagePercentage": 15.5
+}

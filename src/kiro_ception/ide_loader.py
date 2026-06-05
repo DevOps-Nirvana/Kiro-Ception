@@ -142,7 +142,7 @@ def _load_legacy_session_messages(session: SessionInfo) -> list[IndexedMessage]:
 
     messages = []
     try:
-        with open(chat_file) as f:
+        with open(chat_file, encoding="utf-8") as f:
             data = json.load(f)
 
         msg_list = data.get("chat", [])
@@ -259,7 +259,7 @@ def _list_workspace_sessions() -> list[SessionInfo]:
                     sessions_meta_file = workspace_dir / "sessions.json"
                     if sessions_meta_file.exists():
                         try:
-                            with open(sessions_meta_file) as f:
+                            with open(sessions_meta_file, encoding="utf-8") as f:
                                 meta_list = json.load(f)
                             for meta in meta_list:
                                 if meta.get("sessionId") == session_id:
@@ -386,7 +386,7 @@ def _build_execution_index() -> dict[str, list[str]]:
         logger.info(f"Execution index: parsing {len(files_to_parse)} new/changed files (of {len(all_files)} total)")
         for exec_file, mtime in files_to_parse:
             try:
-                with open(exec_file) as f:
+                with open(exec_file, encoding="utf-8") as f:
                     data = json.load(f)
 
                 session_id = data.get("chatSessionId", "")
@@ -444,7 +444,7 @@ def _load_execution_log_messages(session_id: str, workspace: str, timestamp: dat
             continue
 
         try:
-            with open(exec_file) as f:
+            with open(exec_file, encoding="utf-8") as f:
                 data = json.load(f)
 
             actions = data.get("actions", [])
@@ -515,7 +515,7 @@ def _load_workspace_session_messages(session: SessionInfo) -> list[IndexedMessag
 
     messages = []
     try:
-        with open(session_file) as f:
+        with open(session_file, encoding="utf-8") as f:
             data = json.load(f)
 
         # Get workspace from file metadata (more accurate than directory name)

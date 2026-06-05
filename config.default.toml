@@ -50,12 +50,19 @@ cache_dir = "~/.cache/kiro-ception"
 default_threshold = 0.2
 default_max_results = 10
 default_context_window = 3
+# Override the workspace directory used by search_project_history.
+# When set, search_project_history scopes results to this path.
+# When empty (default), auto-detected from the Kiro IDE/CLI environment.
+# Useful if auto-detection doesn't pick up your workspace correctly.
+# workspace_dir = "~/projects/my-main-project"
 
 [memory]
 # Fraction of RAM to use for index (0.33 = 1/3)
 fraction = 0.33
 # Uncomment to set explicit limit in MB instead of fraction
 # limit_mb = 512
+# Set to 0 to disable the memory limit entirely (use all available RAM)
+# limit_mb = 0
 
 [indexing]
 # Milliseconds to sleep between embedding batches (0 = full speed)
@@ -70,3 +77,24 @@ rescan_interval_minutes = 10
 # Only one instance (the leader) binds this port; followers connect to it
 # This and the leader-follower pattern is needed to prevent each process from having its own in-memory cache wasting resources
 leader_port = 19742
+
+[peers]
+# Cross-machine peer federation (disabled by default)
+# When enabled, search queries are fanned out to remote kiro-ception instances
+# and results are merged. Each machine maintains its own independent index.
+enabled = false
+
+# List of peer addresses (host:port)
+# These are other machines running kiro-ception that you want to search
+# nodes = ["192.168.1.50:19742", "workpc.tailscale:19742"]
+nodes = []
+
+# Shared passphrase for encrypting peer traffic (optional)
+# When set, all inter-peer communication is encrypted with AES-256-GCM
+# (key derived via Argon2id). Both peers must use the same passphrase.
+# Leave empty for unencrypted communication (fine on trusted networks / VPNs)
+secret = ""
+
+# Per-peer request timeout in seconds
+# If a peer doesn't respond within this time, its results are skipped
+timeout_seconds = 5

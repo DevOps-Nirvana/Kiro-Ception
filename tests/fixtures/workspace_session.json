@@ -1,0 +1,33 @@
+{
+  "workspaceDirectory": "/Users/dev/projects/my-app",
+  "history": [
+    {
+      "message": {
+        "id": "msg-001-uuid",
+        "role": "user",
+        "content": "Add a health check endpoint to the Express server"
+      }
+    },
+    {
+      "message": {
+        "id": "msg-002-uuid",
+        "role": "assistant",
+        "content": "I'll add a `/health` endpoint that returns the service status and uptime.\n\n```typescript\napp.get('/health', (req, res) => {\n  res.json({\n    status: 'healthy',\n    uptime: process.uptime(),\n    timestamp: new Date().toISOString()\n  });\n});\n```\n\nThis gives you a simple liveness probe for Kubernetes readiness checks."
+      }
+    },
+    {
+      "message": {
+        "id": "msg-003-uuid",
+        "role": "user",
+        "content": "Also add a readiness check that verifies the database connection"
+      }
+    },
+    {
+      "message": {
+        "id": "msg-004-uuid",
+        "role": "assistant",
+        "content": "Added a `/ready` endpoint:\n\n```typescript\napp.get('/ready', async (req, res) => {\n  try {\n    await db.query('SELECT 1');\n    res.json({ status: 'ready', database: 'connected' });\n  } catch (err) {\n    res.status(503).json({ status: 'not ready', database: 'disconnected' });\n  }\n});\n```\n\nThis returns 503 if the database isn't reachable, so Kubernetes will stop routing traffic until it recovers."
+      }
+    }
+  ]
+}

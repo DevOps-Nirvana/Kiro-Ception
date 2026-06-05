@@ -17,8 +17,6 @@ EMBEDDING_DIM = 384
 # Memory constants
 BYTES_PER_MESSAGE = 2600
 DEFAULT_MEMORY_FRACTION = 1 / 3
-MEMORY_LIMIT_ENV = "KIRO_RECALL_MEMORY_LIMIT_MB"
-MEMORY_LIMIT_DISABLED_ENV = "KIRO_RECALL_NO_MEMORY_LIMIT"
 
 
 def expand_path(path: str) -> Path:
@@ -136,6 +134,7 @@ class SearchConfig:
     default_threshold: float = 0.2
     default_max_results: int = 10
     default_context_window: int = 3
+    workspace_dir: str = ""  # Override workspace for search_project_history (empty = auto-detect)
 
 
 @dataclass
@@ -162,6 +161,16 @@ class ServerConfig:
 
 
 @dataclass
+class PeersConfig:
+    """Peer-to-peer federation configuration."""
+
+    enabled: bool = False
+    nodes: list[str] = field(default_factory=list)  # ["host:port", ...]
+    secret: str = ""  # Shared passphrase for encryption (empty = unencrypted)
+    timeout_seconds: int = 5  # Per-peer request timeout
+
+
+@dataclass
 class Config:
     """Main configuration."""
 
@@ -172,6 +181,7 @@ class Config:
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     indexing: IndexingConfig = field(default_factory=IndexingConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
+    peers: PeersConfig = field(default_factory=PeersConfig)
 
     @classmethod
     def from_dict(cls, data: dict) -> "Config":
@@ -183,6 +193,7 @@ class Config:
         mem_data = data.get("memory", {})
         idx_data = data.get("indexing", {})
         srv_data = data.get("server", {})
+        peers_data = data.get("peers", {})
 
         return cls(
             cli=CLISourceConfig(**cli_data) if cli_data else CLISourceConfig(),
@@ -192,6 +203,7 @@ class Config:
             memory=MemoryConfig(**mem_data) if mem_data else MemoryConfig(),
             indexing=IndexingConfig(**idx_data) if idx_data else IndexingConfig(),
             server=ServerConfig(**srv_data) if srv_data else ServerConfig(),
+            peers=PeersConfig(**peers_data) if peers_data else PeersConfig(),
         )
 
 
@@ -249,11 +261,16 @@ def diff_configs(old: Config, new: Config) -> list[dict]:
         ("search.default_threshold", old.search.default_threshold, new.search.default_threshold),
         ("search.default_max_results", old.search.default_max_results, new.search.default_max_results),
         ("search.default_context_window", old.search.default_context_window, new.search.default_context_window),
+        ("search.workspace_dir", old.search.workspace_dir, new.search.workspace_dir),
         ("memory.fraction", old.memory.fraction, new.memory.fraction),
         ("memory.limit_mb", old.memory.limit_mb, new.memory.limit_mb),
         ("server.leader_port", old.server.leader_port, new.server.leader_port),
         ("sources.cli.enabled", old.cli.enabled, new.cli.enabled),
         ("sources.ide.enabled", old.ide.enabled, new.ide.enabled),
+        ("peers.enabled", old.peers.enabled, new.peers.enabled),
+        ("peers.nodes", old.peers.nodes, new.peers.nodes),
+        ("peers.secret", "***" if old.peers.secret else "", "***" if new.peers.secret else ""),
+        ("peers.timeout_seconds", old.peers.timeout_seconds, new.peers.timeout_seconds),
     ]
 
     for key, old_val, new_val in reindex_keys:

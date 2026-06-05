@@ -14,11 +14,13 @@ import numpy as np
 from mcp.server.fastmcp import FastMCP
 
 from .background_indexer import get_background_indexer
-from .config import get_config
+from .config import get_config as _get_config
+from .config import expand_path
 from .embeddings import get_embedding_backend
 from .indexer import get_memory_limit
 from .leader import get_instance_manager
 from .models import Source
+from .peers import fan_out_search, merge_peer_results
 from .search_utils import (
     build_context_window,
     deduplicate_results,
@@ -257,10 +259,18 @@ def _get_search_index() -> SearchIndex:
 
 
 def _get_current_workspace() -> str | None:
-    """Get current workspace from environment or cwd."""
-    for var in ("KIRO_PROJECT_DIR", "KIRO_WORKSPACE"):
-        if val := os.environ.get(var):
-            return val
+    """Get current workspace path.
+
+    Priority:
+    1. Config file: search.workspace_dir (if set)
+    2. Environment: KIRO_WORKSPACE (set by Kiro IDE/CLI)
+    3. Current working directory (PWD or cwd)
+    """
+    config = _get_config()
+    if config.search.workspace_dir:
+        return str(expand_path(config.search.workspace_dir))
+    if val := os.environ.get("KIRO_WORKSPACE"):
+        return val
     return os.environ.get("PWD") or str(Path.cwd())
 
 
@@ -316,8 +326,14 @@ def _search(
                     }
 
     # Leader path: search directly
-    return _leader_search(query, workspace, source, after, before,
-                          context_size, threshold, max_results, offset)
+    local_response = _leader_search(query, workspace, source, after, before,
+                                    context_size, threshold, max_results, offset)
+
+    # Fan out to peers if configured
+    return _search_with_peers(
+        local_response, query, workspace, source, after, before,
+        context_size, threshold, max_results, offset,
+    )
 
 
 def _leader_search(
@@ -416,6 +432,37 @@ def _leader_search(
     )
 
 
+def _search_with_peers(
+    local_response: dict,
+    query: str,
+    workspace: str | None,
+    source: Source | None,
+    after: str | None,
+    before: str | None,
+    context_size: int,
+    threshold: float,
+    max_results: int,
+    offset: int,
+) -> dict:
+    """Merge local results with peer results if peering is enabled."""
+    peer_request = {
+        "query": query,
+        "workspace": workspace,
+        "source": source.value if source else None,
+        "after": after,
+        "before": before,
+        "context_size": context_size,
+        "threshold": threshold,
+        "max_results": max_results,
+        "offset": offset,
+    }
+
+    peer_responses = fan_out_search(peer_request)
+    if peer_responses:
+        return merge_peer_results(local_response, peer_responses)
+    return local_response
+
+
 
 
 
@@ -478,6 +525,7 @@ def search_global_history(
     threshold: float = 0.2,
     max_results: int = 10,
     offset: int = 0,
+    source: str = "all",
 ) -> dict:
     """
     Search conversation history across ALL WORKSPACES.
@@ -493,90 +541,23 @@ def search_global_history(
         threshold: Minimum similarity 0-1 (default: 0.2)
         max_results: Maximum results to return (default: 10)
         offset: Skip results for pagination (default: 0)
+        source: Filter by conversation source. Options: "all" (default), "cli", "ide".
+                Only set to "cli" or "ide" if the user explicitly asks to search
+                only CLI or only IDE conversations. Otherwise leave as "all".
 
     Returns:
         Search results with matched messages, scores, workspace, context, pagination
     """
+    source_filter = None
+    if source == "cli":
+        source_filter = Source.CLI
+    elif source == "ide":
+        source_filter = Source.IDE
+
     return _search(
         query=query,
         workspace=None,
-        source=None,
-        after=after,
-        before=before,
-        context_size=context_size,
-        threshold=threshold,
-        max_results=max_results,
-        offset=offset,
-    )
-
-
-@mcp.tool()
-def search_cli_history(
-    query: str,
-    after: str | None = None,
-    before: str | None = None,
-    context_size: int = 3,
-    threshold: float = 0.2,
-    max_results: int = 10,
-    offset: int = 0,
-) -> dict:
-    """
-    Search Kiro CLI conversation history only.
-
-    Args:
-        query: Keywords or sentence describing what to find
-        after: Filter to messages on/after this date (ISO 8601)
-        before: Filter to messages before this date (ISO 8601)
-        context_size: Messages before AND after each match (default: 3)
-        threshold: Minimum similarity 0-1 (default: 0.2)
-        max_results: Maximum results (default: 10)
-        offset: Skip results for pagination (default: 0)
-
-    Returns:
-        Search results from CLI conversations only
-    """
-    return _search(
-        query=query,
-        workspace=None,
-        source=Source.CLI,
-        after=after,
-        before=before,
-        context_size=context_size,
-        threshold=threshold,
-        max_results=max_results,
-        offset=offset,
-    )
-
-
-@mcp.tool()
-def search_ide_history(
-    query: str,
-    after: str | None = None,
-    before: str | None = None,
-    context_size: int = 3,
-    threshold: float = 0.2,
-    max_results: int = 10,
-    offset: int = 0,
-) -> dict:
-    """
-    Search Kiro IDE conversation history only.
-
-    Args:
-        query: Keywords or sentence describing what to find
-        after: Filter to messages on/after this date (ISO 8601)
-        before: Filter to messages before this date (ISO 8601)
-        context_size: Messages before AND after each match (default: 3)
-        threshold: Minimum similarity 0-1 (default: 0.2)
-        max_results: Maximum results (default: 10)
-        offset: Skip results for pagination (default: 0)
-
-    Returns:
-        Search results from IDE conversations only
-    """
-    return _search(
-        query=query,
-        workspace=None,
-        source=Source.IDE,
+        source=source_filter,
         after=after,
         before=before,
         context_size=context_size,
@@ -610,47 +591,21 @@ def get_indexing_status() -> dict:
 
 
 @mcp.tool()
-def force_reindex() -> dict:
+def rescan(full: bool = False) -> dict:
     """
-    Trigger a full reindex of all conversation history.
+    Trigger a rescan for new or changed conversations.
 
-    Clears the session state cache so ALL sessions are re-read from disk
-    and re-processed. Existing embeddings are preserved (only truly new text
-    gets re-embedded). Use this after changing filter rules or if the index
-    seems corrupted.
+    By default, checks all session files for mtime changes and indexes only
+    new/modified sessions. This is fast since unchanged files are skipped.
 
-    This is the heavy option — prefer rescan_now for picking up new messages.
+    Set full=True to ignore mtime caching and re-read all sessions from disk.
+    This is useful after changing message filter rules or if the index seems
+    stale. Existing embeddings are preserved — only truly new text gets
+    re-embedded, so even a full rescan is relatively quick.
 
-    Returns:
-        Confirmation that full reindex was triggered
-    """
-    _ensure_initialized()
-    manager = get_instance_manager()
-
-    if not manager.is_leader:
-        follower = manager.follower_instance
-        if follower:
-            try:
-                return follower.trigger_reindex()
-            except Exception:
-                return {"error": "Leader unavailable"}
-
-    indexer = get_background_indexer()
-    indexer.trigger_reindex()
-    return {
-        "status": "force_reindex_triggered",
-        "message": "Full reindex started — all sessions will be re-read. Existing embeddings preserved. Use get_indexing_status to monitor.",
-    }
-
-
-@mcp.tool()
-def rescan_now() -> dict:
-    """
-    Trigger an immediate rescan for new or changed conversations.
-
-    Checks all session files for mtime changes and indexes any new/modified
-    sessions. Much faster than force_reindex since unchanged files are skipped.
-    Use this to pick up recent conversations without waiting for the periodic rescan.
+    Args:
+        full: If True, clear mtime cache and re-read all sessions. If False
+              (default), only process files whose mtime has changed.
 
     Returns:
         Confirmation that rescan was triggered
@@ -662,16 +617,25 @@ def rescan_now() -> dict:
         follower = manager.follower_instance
         if follower:
             try:
+                if full:
+                    return follower.trigger_reindex()
                 return follower.trigger_rescan()
             except Exception:
                 return {"error": "Leader unavailable"}
 
     indexer = get_background_indexer()
-    indexer.trigger_rescan()
-    return {
-        "status": "rescan_triggered",
-        "message": "Immediate rescan started — checking for new/changed sessions. Use get_indexing_status to monitor.",
-    }
+    if full:
+        indexer.trigger_reindex()
+        return {
+            "status": "full_rescan_triggered",
+            "message": "Full rescan started — all sessions will be re-read (mtime cache cleared). Existing embeddings preserved. Use get_indexing_status to monitor.",
+        }
+    else:
+        indexer.trigger_rescan()
+        return {
+            "status": "rescan_triggered",
+            "message": "Rescan started — checking for new/changed sessions. Use get_indexing_status to monitor.",
+        }
 
 
 @mcp.tool()
@@ -696,10 +660,21 @@ def get_config() -> dict:
             except Exception:
                 pass  # Fall through to local config
 
-    config = get_config()
+    config = _get_config()
     indexer = get_background_indexer()
 
+    from .config import CONFIG_FILE
+
     return {
+        "instance": manager.get_role_info(),
+        "paths": {
+            "config_file": str(CONFIG_FILE),
+            "config_exists": CONFIG_FILE.exists(),
+            "cache_dir": str(config.embedding.cache_path),
+            "cache_database": str(indexer.cache.db_path) if indexer.cache else "not initialized",
+            "leader_lock": str(config.embedding.cache_path / "leader.lock"),
+            "leader_info": str(config.embedding.cache_path / "leader.json"),
+        },
         "sources": {
             "cli": {
                 "enabled": config.cli.enabled,
@@ -716,7 +691,6 @@ def get_config() -> dict:
             "api_base": config.embedding.api_base or None,
             "dimensions": config.embedding.dimensions,
             "batch_size": config.embedding.batch_size,
-            "cache_dir": config.embedding.cache_dir,
             "fingerprint": indexer.backend.fingerprint() if indexer.backend else "not initialized",
         },
         "search": {
@@ -736,30 +710,18 @@ def get_config() -> dict:
         "server": {
             "leader_port": config.server.leader_port,
         },
+        "peers": {
+            "enabled": config.peers.enabled,
+            "nodes": config.peers.nodes,
+            "secret_configured": bool(config.peers.secret),
+            "timeout_seconds": config.peers.timeout_seconds,
+        },
         "cache": {
-            "database_path": str(indexer.cache.db_path) if indexer.cache else "not initialized",
             "embedding_count": indexer.cache.embedding_count if indexer.cache else 0,
             "message_count": indexer.cache.message_count if indexer.cache else 0,
             "indexed_sessions": indexer.cache.indexed_session_count if indexer.cache else 0,
         },
     }
-
-
-@mcp.tool()
-def get_instance_role() -> dict:
-    """
-    Get the role of this MCP server instance (leader or follower).
-
-    The leader holds embeddings in RAM and runs the background indexer.
-    Followers forward requests to the leader via localhost HTTP.
-    Useful for debugging multi-window scenarios.
-
-    Returns:
-        Role information including PID and port details
-    """
-    _ensure_initialized()
-    manager = get_instance_manager()
-    return manager.get_role_info()
 
 
 @mcp.tool()
@@ -770,7 +732,7 @@ def reload_config() -> dict:
     Re-reads ~/.config/kiro-ception/config.toml and applies changes.
     Safe changes (throttle_ms, batch_size, search defaults) take effect immediately.
     Breaking changes (model, backend, dimensions) are detected but require
-    force_reindex to take effect.
+    rescan(full=True) to take effect.
 
     Returns:
         List of changes detected, what was applied, and any warnings
@@ -812,10 +774,10 @@ def reload_config() -> dict:
     # Flag breaking changes
     if breaking_changes:
         for c in breaking_changes:
-            deferred.append(f"{c['key']} — requires force_reindex to take effect")
+            deferred.append(f"{c['key']} — requires rescan(full=True) to take effect")
             warnings.append(
                 f"{c['key']} changed: {c['old']} → {c['new']}. "
-                f"This requires a full reindex. Run force_reindex to rebuild with the new settings."
+                f"This requires a full rescan. Run rescan(full=True) to rebuild with the new settings."
             )
 
     return {

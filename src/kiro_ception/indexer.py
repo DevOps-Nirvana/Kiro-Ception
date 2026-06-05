@@ -1,16 +1,12 @@
 """Memory management utilities for conversation indexing."""
 
-import hashlib
 import logging
-import os
 import platform
 import subprocess
 
 from .config import (
     BYTES_PER_MESSAGE,
     DEFAULT_MEMORY_FRACTION,
-    MEMORY_LIMIT_DISABLED_ENV,
-    MEMORY_LIMIT_ENV,
     get_config,
 )
 from .models import SessionInfo
@@ -45,19 +41,20 @@ def get_physical_memory() -> int:
 
 
 def get_memory_limit() -> int:
-    """Get memory limit in bytes for the index."""
-    if os.environ.get(MEMORY_LIMIT_DISABLED_ENV):
-        return 0
+    """Get memory limit in bytes for the index.
 
-    override = os.environ.get(MEMORY_LIMIT_ENV)
-    if override:
-        try:
-            return int(override) * 1024 * 1024
-        except ValueError:
-            logger.warning(f"Invalid {MEMORY_LIMIT_ENV} value: {override}")
+    Priority:
+    1. Config memory.limit_mb (explicit MB limit)
+    2. Config memory.fraction × physical RAM (default: 1/3)
+    3. 0 if physical RAM can't be determined
 
+    Set memory.limit_mb = 0 in config to disable the memory limit entirely.
+    """
     config = get_config()
-    if config.memory.limit_mb:
+
+    if config.memory.limit_mb is not None:
+        if config.memory.limit_mb == 0:
+            return 0  # Explicitly disabled
         return config.memory.limit_mb * 1024 * 1024
 
     physical = get_physical_memory()

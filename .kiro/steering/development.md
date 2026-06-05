@@ -39,15 +39,92 @@
 - Cache directory: `~/.cache/kiro-ception/`
 - All paths support `~` expansion via `Path.expanduser()`
 
-## Testing Changes
+## Development Workflow
 
 After modifying code:
 ```bash
 uv sync                              # Rebuild package in venv
+uv run pytest tests/ -q              # Run test suite (245 tests, ~10s)
 uv run kiro-ception                  # Test MCP server starts (Ctrl+C to exit)
 ```
 
 To test with the installed Power, reinstall it from the Kiro Powers panel (or restart Kiro to reload the MCP server).
+
+## Testing
+
+### Running Tests
+
+```bash
+uv run pytest tests/ -q              # Quick summary
+uv run pytest tests/ -v              # Verbose (see each test name)
+uv run pytest tests/test_tools.py    # Run a single file
+uv run pytest tests/ -k "search"     # Run tests matching a keyword
+```
+
+### Test Structure
+
+```
+tests/
+├── fixtures/                          # Anonymized sample data files
+│   ├── legacy_session.chat            # Legacy .chat format fixture
+│   ├── workspace_session.json         # Workspace-sessions format fixture
+│   ├── execution_log.json             # Execution log format fixture
+│   └── sessions.json                  # Sessions metadata fixture
+├── test_search_utils.py               # Pure functions: parse_date, deduplicate, context windows
+├── test_config.py                     # Config loading, from_dict, diff_configs
+├── test_tools.py                      # All MCP tool endpoints (mocked deps)
+├── test_cache.py                      # SQLite cache with real temp databases
+├── test_ide_loader.py                 # Message filtering, code block replacement
+├── test_embeddings.py                 # Backend factory, OpenAI-compatible with mocked HTTP
+├── test_session_loading.py            # All session formats: legacy, workspace, exec logs, CLI
+├── test_indexer.py                    # Full pipeline: index → search, SearchIndex, memory limits
+├── test_leader.py                     # Leader-follower coordination, file locks, promotion
+├── test_leader_http.py                # Real HTTP server integration (all endpoints)
+├── test_background_indexer_live.py    # Live threading: indexer start → completion → cache verify
+└── test_remaining_gaps.py             # CLI extract, follower promotion, TOML loading, exec index
+```
+
+### Test Tiers
+
+**Tier 1 — Unit tests (no I/O, instant):**
+- `test_search_utils.py` — pure functions, zero dependencies
+- `test_config.py` — dataclass construction and diffing
+- `test_tools.py` — MCP tools with mocked indexer/manager
+- `test_ide_loader.py` — message filtering and text processing
+
+**Tier 2 — Integration tests (temp files/DBs, fast):**
+- `test_cache.py` — real SQLite in tmp_path
+- `test_embeddings.py` — mocked HTTP for OpenAI-compatible backend
+- `test_session_loading.py` — fixture files parsed by real loaders
+
+**Tier 3 — System tests (threads, HTTP, slower):**
+- `test_indexer.py` — full indexing pipeline with fixture corpus
+- `test_leader.py` — file locks, role assignment
+- `test_leader_http.py` — real HTTP server on random port
+- `test_background_indexer_live.py` — real daemon threads
+
+### Writing Tests
+
+- Use `pytest` with class-based grouping (`class TestFoo:`)
+- Use `tmp_path` fixture for temp directories/files
+- Use `monkeypatch` for env vars and module-level patches
+- Use `unittest.mock.patch` for function/method mocking
+- Fixtures for test data go in `tests/fixtures/`
+- Fixture files should be anonymized (no real user data)
+- Test names: `test_<what_it_does>` (e.g., `test_empty_input_returns_none`)
+
+## MCP Tools (Current)
+
+6 tools total:
+
+| Tool | Purpose |
+|------|---------|
+| `search_project_history` | Search current workspace |
+| `search_global_history` | Search all workspaces (optional `source` filter: all/cli/ide) |
+| `get_indexing_status` | Check indexer progress/state |
+| `rescan` | Pick up new sessions (`full=True` to ignore mtime cache) |
+| `get_config` | Show config, paths, instance role, cache stats |
+| `reload_config` | Hot-reload config from disk |
 
 ## Adding New MCP Tools
 
@@ -56,8 +133,9 @@ To test with the installed Power, reinstall it from the Kiro Powers panel (or re
 3. Handle leader/follower routing if the tool needs indexer/cache access
 4. Add corresponding HTTP endpoint in `leader.py` if followers need it
 5. Add follower method in `FollowerInstance` class
-6. Update POWER.md tool table and trigger scenarios
-7. Update README.md management tools table
+6. Add tests in `tests/test_tools.py`
+7. Update POWER.md tool table and trigger scenarios
+8. Update README.md management tools table
 
 ## Adding New Config Options
 
@@ -65,7 +143,8 @@ To test with the installed Power, reinstall it from the Kiro Powers panel (or re
 2. Add to `diff_configs()` safe_keys or reindex_keys list
 3. Add to `config.default.toml` with comment
 4. Add to `get_config` tool response in `server.py`
-5. Update README Configuration section
+5. Add test in `tests/test_config.py`
+6. Update README Configuration section
 
 ## Message Filtering
 
@@ -78,6 +157,8 @@ Messages are skipped if they start with system prompt boilerplate:
 - `You are operating in a workspace`
 
 Code blocks are replaced with `[code:language]` placeholders via `_replace_code_blocks()`.
+
+These are tested in `tests/test_ide_loader.py` — update the tests when adding new skip prefixes.
 
 ## Embedding Cache
 
@@ -94,6 +175,8 @@ src/kiro_ception/
 ├── server.py              # MCP tools + SearchIndex (read path)
 ├── background_indexer.py  # Background thread (write path)
 ├── search_utils.py        # Pure search post-processing functions (testable)
+├── peers.py               # Cross-machine federation (fan-out, merge, encryption)
+├── peer_crypto.py         # Argon2id key derivation + AES-256-GCM
 ├── cache.py               # SQLite-backed storage
 ├── config.py              # TOML config loading
 ├── embeddings.py          # Embedding backend abstraction

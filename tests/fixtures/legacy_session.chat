@@ -1,0 +1,44 @@
+{
+  "executionId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "actionId": "act",
+  "context": [],
+  "validations": [],
+  "chat": [
+    {
+      "role": "human",
+      "content": "How do I configure nginx to proxy WebSocket connections?"
+    },
+    {
+      "role": "assistant",
+      "content": "To proxy WebSocket connections with nginx, you need to add the `Upgrade` and `Connection` headers. Here's a basic configuration:\n\n```nginx\nlocation /ws {\n    proxy_pass http://backend:8080;\n    proxy_http_version 1.1;\n    proxy_set_header Upgrade $http_upgrade;\n    proxy_set_header Connection \"upgrade\";\n    proxy_set_header Host $host;\n}\n```\n\nThe key parts are `proxy_http_version 1.1` and the two `proxy_set_header` directives for the upgrade handshake."
+    },
+    {
+      "role": "human",
+      "content": "What about handling timeouts for long-lived connections?"
+    },
+    {
+      "role": "assistant",
+      "content": "For long-lived WebSocket connections, add these timeout directives:\n\n```nginx\nproxy_read_timeout 3600s;\nproxy_send_timeout 3600s;\n```\n\nThe default is 60 seconds, which will close idle WebSocket connections. Setting it to 3600s (1 hour) prevents nginx from dropping connections that don't have traffic for a while.\n\nYou can also add a keepalive to the upstream block:\n\n```nginx\nupstream backend {\n    server 127.0.0.1:8080;\n    keepalive 32;\n}\n```"
+    },
+    {
+      "role": "tool",
+      "content": "File tree information..."
+    },
+    {
+      "role": "human",
+      "content": "Can you show me a complete config file with both regular HTTP and WebSocket support?"
+    },
+    {
+      "role": "assistant",
+      "content": "Here's a complete config:\n\n```nginx\nupstream api_backend {\n    server 127.0.0.1:8080;\n    keepalive 32;\n}\n\nserver {\n    listen 80;\n    server_name example.com;\n\n    location / {\n        proxy_pass http://api_backend;\n        proxy_set_header Host $host;\n        proxy_set_header X-Real-IP $remote_addr;\n    }\n\n    location /ws {\n        proxy_pass http://api_backend;\n        proxy_http_version 1.1;\n        proxy_set_header Upgrade $http_upgrade;\n        proxy_set_header Connection \"upgrade\";\n        proxy_set_header Host $host;\n        proxy_read_timeout 3600s;\n        proxy_send_timeout 3600s;\n    }\n}\n```"
+    }
+  ],
+  "metadata": {
+    "modelId": "auto",
+    "modelProvider": "qdev",
+    "workflow": "act",
+    "workflowId": "abc12345-def6-7890-abcd-ef1234567890",
+    "startTime": 1717200000000,
+    "endTime": 1717200060000
+  }
+}
