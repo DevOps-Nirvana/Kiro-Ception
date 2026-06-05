@@ -20,8 +20,31 @@ patterns = [
 ]
 
 [embedding]
+# Backend: "sentence-transformers" (default, local) or "openai-compatible" (Ollama, LM Studio, OpenAI, etc.)
+backend = "sentence-transformers"
 model = "all-MiniLM-L6-v2"
 cache_dir = "~/.cache/kiro-total-recall"
+
+# OpenAI-compatible backend settings (only used when backend = "openai-compatible")
+# api_base = "http://localhost:11434/v1"  # Ollama default
+# api_base = "http://localhost:1234/v1"   # LM Studio default
+# api_base = "https://api.openai.com/v1"  # OpenAI
+# api_key = ""                            # Required for hosted providers, optional for local
+# dimensions = 1024                       # Output dimensions (omit for model default)
+
+# Example: Ollama with qwen3-embedding:8b
+# backend = "openai-compatible"
+# model = "qwen3-embedding:8b"
+# api_base = "http://localhost:11434/v1"
+# dimensions = 2048
+# batch_size = 1  # 1 for large models, higher for small/fast models, typically a max of 16 for LLMs.  The default is 16
+
+# Example: OpenAI text-embedding-3-large
+# backend = "openai-compatible"
+# model = "text-embedding-3-large"
+# api_base = "https://api.openai.com/v1"
+# api_key = "sk-..."
+# dimensions = 1024
 
 [search]
 default_threshold = 0.2
@@ -33,3 +56,14 @@ default_context_window = 3
 fraction = 0.33
 # Uncomment to set explicit limit in MB instead of fraction
 # limit_mb = 512
+
+[indexing]
+# Milliseconds to sleep between embedding batches (0 = full speed)
+# Set higher (e.g., 500-2000) to reduce GPU load during active use
+throttle_ms = 0
+
+[server]
+# Localhost-only port for leader-follower inter-process communication
+# Only one instance (the leader) binds this port; followers connect to it
+# This and the leader-follower pattern is needed to prevent each process from having its own in-memory cache wasting resources
+leader_port = 19742

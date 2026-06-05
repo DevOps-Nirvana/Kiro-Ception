@@ -16,11 +16,11 @@ from filelock import FileLock
 from .config import (
     BYTES_PER_MESSAGE,
     DEFAULT_MEMORY_FRACTION,
-    EMBEDDING_DIM,
     MEMORY_LIMIT_DISABLED_ENV,
     MEMORY_LIMIT_ENV,
     get_config,
 )
+from .embeddings import EmbeddingBackend, get_embedding_backend
 from .loader import list_all_sessions, load_messages_for_sessions
 from .models import IndexedMessage, SessionInfo, Source
 
@@ -109,7 +109,8 @@ class ConversationIndex:
     """Index of conversation messages with semantic embeddings."""
 
     def __init__(self):
-        self._model = None
+        self._backend: EmbeddingBackend | None = None
+        self._backend_fingerprint: str = ""
         self._messages: list[IndexedMessage] = []
         self._embeddings: np.ndarray | None = None
         self._text_hashes: list[str] = []
@@ -119,28 +120,61 @@ class ConversationIndex:
         self._sorted_timestamps: np.ndarray | None = None
 
     @property
-    def model(self):
-        """Lazy-load the sentence transformer model."""
-        if self._model is None:
-            from sentence_transformers import SentenceTransformer
+    def backend(self) -> EmbeddingBackend:
+        """Get or create the embedding backend."""
+        if self._backend is None:
+            self._backend = get_embedding_backend()
+            self._backend_fingerprint = self._backend.fingerprint()
+        return self._backend
 
-            config = get_config()
-            print(f"[Total Recall] Loading embedding model '{config.embedding.model}'...")
-            self._model = SentenceTransformer(config.embedding.model)
-            print(f"[Total Recall] Model loaded.")
-        return self._model
+    @property
+    def model(self):
+        """Legacy property for backward compatibility. Returns the backend."""
+        return self.backend
+
+    def _get_embedding_dim(self) -> int:
+        """Get embedding dimensions from backend."""
+        return self.backend.dimensions()
 
     def _compute_text_hash(self, text: str) -> str:
         return hashlib.md5(text.encode()).hexdigest()
 
-    def _load_cache(self) -> dict[str, np.ndarray]:
-        """Load cached embeddings."""
+    def _get_cache_file(self):
+        """Get the cache file path, namespaced by backend fingerprint.
+
+        The cache filename includes a hash of the backend config so that
+        changing the model/backend/dimensions automatically invalidates the cache.
+        """
         config = get_config()
-        cache_file = config.embedding.cache_file
+        fingerprint = self.backend.fingerprint()
+        fp_hash = hashlib.md5(fingerprint.encode()).hexdigest()[:12]
+        return config.embedding.cache_path / f"embeddings_{fp_hash}.pkl"
+
+    def _get_lock_file(self):
+        """Get the lock file path corresponding to the current cache file."""
+        cache_file = self._get_cache_file()
+        return cache_file.with_suffix(".lock")
+
+    def _load_cache(self) -> dict[str, np.ndarray]:
+        """Load cached embeddings for the current backend configuration."""
+        cache_file = self._get_cache_file()
         try:
             with open(cache_file, "rb") as f:
-                cache = pickle.load(f)
-                return cache if isinstance(cache, dict) else {}
+                data = pickle.load(f)
+                if not isinstance(data, dict):
+                    return {}
+                # Validate that cached embeddings have the right dimensions
+                if data:
+                    sample = next(iter(data.values()))
+                    expected_dim = self._get_embedding_dim()
+                    if sample.shape[0] != expected_dim:
+                        print(
+                            f"[Total Recall] Cache dimension mismatch "
+                            f"(cached={sample.shape[0]}, expected={expected_dim}). "
+                            f"Discarding cache."
+                        )
+                        return {}
+                return data
         except (OSError, pickle.PickleError, EOFError):
             return {}
 
@@ -148,8 +182,8 @@ class ConversationIndex:
         """Save embeddings atomically with file locking."""
         config = get_config()
         cache_path = config.embedding.cache_path
-        cache_file = config.embedding.cache_file
-        lock_file = config.embedding.lock_file
+        cache_file = self._get_cache_file()
+        lock_file = self._get_lock_file()
 
         cache_path.mkdir(parents=True, exist_ok=True)
 
@@ -180,12 +214,16 @@ class ConversationIndex:
         self._sorted_timestamps = timestamps[self._timestamp_order]
 
     def needs_rebuild(self) -> bool:
-        """Check if index needs rebuild."""
+        """Check if index needs rebuild (new sessions or backend config changed)."""
+        if self._backend and self._backend.fingerprint() != self._backend_fingerprint:
+            print("[Total Recall] Backend configuration changed. Full re-index required.")
+            return True
         return _get_sessions_fingerprint() != self._sessions_fingerprint
 
     def build_index(self):
         """Build or update the search index."""
         self._sessions_fingerprint = _get_sessions_fingerprint()
+        self._backend_fingerprint = self.backend.fingerprint()
 
         all_sessions = list_all_sessions()
         memory_limit = get_memory_limit()
@@ -215,6 +253,7 @@ class ConversationIndex:
         ide_msgs = sum(1 for m in self._messages if m.source == Source.IDE)
         print(f"[Total Recall] Loaded {len(self._messages)} messages (CLI: {cli_msgs}, IDE: {ide_msgs})")
 
+        embedding_dim = self._get_embedding_dim()
         cache = self._load_cache()
         self._text_hashes = []
         texts_to_embed, indices_to_embed = [], []
@@ -226,7 +265,7 @@ class ConversationIndex:
                 texts_to_embed.append(msg.searchable_text)
                 indices_to_embed.append(i)
 
-        self._embeddings = np.zeros((len(self._messages), EMBEDDING_DIM), dtype=np.float32)
+        self._embeddings = np.zeros((len(self._messages), embedding_dim), dtype=np.float32)
 
         # Load cached embeddings
         cached_count = 0
@@ -247,12 +286,7 @@ class ConversationIndex:
                 batch_texts = texts_to_embed[batch_start:batch_end]
                 batch_indices = indices_to_embed[batch_start:batch_end]
 
-                batch_embeddings = self.model.encode(
-                    batch_texts,
-                    show_progress_bar=False,
-                    convert_to_numpy=True,
-                    normalize_embeddings=True,
-                )
+                batch_embeddings = self.backend.encode(batch_texts)
 
                 for i, idx in enumerate(batch_indices):
                     self._embeddings[idx] = batch_embeddings[i]
@@ -304,12 +338,7 @@ class ConversationIndex:
         if len(candidate_indices) == 0:
             return []
 
-        query_embedding = self.model.encode(
-            query,
-            show_progress_bar=False,
-            convert_to_numpy=True,
-            normalize_embeddings=True,
-        )
+        query_embedding = self.backend.encode_query(query)
 
         candidate_embeddings = self._embeddings[candidate_indices]
         similarities = np.dot(candidate_embeddings, query_embedding)

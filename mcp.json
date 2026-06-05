@@ -1,8 +1,7 @@
 {
   "mcpServers": {
     "total-recall": {
-      "command": "uvx",
-      "args": ["--from", "git+https://github.com/danilop/kiro-total-recall", "kiro-total-recall"]
+      "command": "/Users/farley/ml-learnings/kiro-total-recall/.venv/bin/kiro-total-recall"
     }
   }
 }

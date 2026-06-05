@@ -107,8 +107,14 @@ class IDESourceConfig:
 class EmbeddingConfig:
     """Embedding configuration."""
 
+    backend: str = "sentence-transformers"  # "sentence-transformers" or "openai-compatible"
     model: str = EMBEDDING_MODEL
     cache_dir: str = "~/.cache/kiro-total-recall"
+    # OpenAI-compatible backend settings
+    api_base: str = ""  # e.g. "http://localhost:11434/v1" for Ollama
+    api_key: str = ""  # Optional, for hosted providers (OpenAI, etc.)
+    dimensions: int | None = None  # Output dimensions (None = model default)
+    batch_size: int = 16  # Messages per embedding request (1 = simplest, higher = faster for small messages)
 
     @property
     def cache_path(self) -> Path:
@@ -141,6 +147,20 @@ class MemoryConfig:
 
 
 @dataclass
+class IndexingConfig:
+    """Indexing behavior configuration."""
+
+    throttle_ms: int = 0  # Sleep between batches (0 = full speed)
+
+
+@dataclass
+class ServerConfig:
+    """Server/inter-process communication configuration."""
+
+    leader_port: int = 19742  # Localhost-only HTTP port for leader
+
+
+@dataclass
 class Config:
     """Main configuration."""
 
@@ -149,6 +169,8 @@ class Config:
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     search: SearchConfig = field(default_factory=SearchConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
+    indexing: IndexingConfig = field(default_factory=IndexingConfig)
+    server: ServerConfig = field(default_factory=ServerConfig)
 
     @classmethod
     def from_dict(cls, data: dict) -> "Config":
@@ -158,6 +180,8 @@ class Config:
         emb_data = data.get("embedding", {})
         search_data = data.get("search", {})
         mem_data = data.get("memory", {})
+        idx_data = data.get("indexing", {})
+        srv_data = data.get("server", {})
 
         return cls(
             cli=CLISourceConfig(**cli_data) if cli_data else CLISourceConfig(),
@@ -165,6 +189,8 @@ class Config:
             embedding=EmbeddingConfig(**emb_data) if emb_data else EmbeddingConfig(),
             search=SearchConfig(**search_data) if search_data else SearchConfig(),
             memory=MemoryConfig(**mem_data) if mem_data else MemoryConfig(),
+            indexing=IndexingConfig(**idx_data) if idx_data else IndexingConfig(),
+            server=ServerConfig(**srv_data) if srv_data else ServerConfig(),
         )
 
 
