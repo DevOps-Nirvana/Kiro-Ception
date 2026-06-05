@@ -7,7 +7,6 @@ become followers that forward requests to the leader.
 
 import os
 import time
-from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
@@ -15,12 +14,19 @@ import numpy as np
 from mcp.server.fastmcp import FastMCP
 
 from .background_indexer import get_background_indexer
-from .cache import EmbeddingCache
 from .config import get_config
 from .embeddings import get_embedding_backend
 from .indexer import get_memory_limit
 from .leader import get_instance_manager
 from .models import Source
+from .search_utils import (
+    build_context_window,
+    deduplicate_results,
+    format_search_response,
+    generate_hint,
+    parse_date,
+    truncate_content,
+)
 
 mcp = FastMCP("kiro-ception")
 
@@ -320,8 +326,8 @@ def _leader_search(
         }
 
     # Parse date filters
-    after_dt = _parse_date(after)
-    before_dt = _parse_date(before)
+    after_dt = parse_date(after)
+    before_dt = parse_date(before)
 
     # Embed the query
     try:
@@ -347,126 +353,33 @@ def _leader_search(
     )
 
     # Deduplicate overlapping context windows
-    scored_results = _deduplicate(scored_results, context_size)
+    scored_results = deduplicate_results(scored_results, context_size)
 
-    total = len(scored_results)
-    paginated = scored_results[offset:offset + max_results]
-
-    # Build context windows for results
+    # Build response with context windows
     cache = indexer.cache
-    results = []
-    for match in paginated:
-        context = _get_context(cache, match["session_id"], match["message_index"], context_size, match["uuid"]) if cache else []
-        results.append({
-            "matched_message": {
-                "role": match["role"],
-                "content": match["content"],
-                "timestamp": datetime.fromtimestamp(match["timestamp"]).isoformat(),
-                "workspace": match["workspace"],
-                "session_id": match["session_id"],
-                "uuid": match["uuid"],
-                "source": match["source"],
-            },
-            "score": round(match["score"], 4),
-            "context": context,
-        })
 
-    has_more = offset + len(results) < total
-    hint = _generate_hint(total, offset, len(results), max_results, has_more)
+    def get_session_messages(session_id: str) -> list[dict]:
+        if cache is None:
+            return []
+        return cache.get_session_messages(session_id)
 
-    return {
-        "results": results,
-        "query": query,
-        "total_matches": total,
-        "offset": offset,
-        "has_more": has_more,
-        "hint": hint,
-    }
+    return format_search_response(
+        scored_results=scored_results,
+        query=query,
+        offset=offset,
+        max_results=max_results,
+        context_size=context_size,
+        get_session_messages=get_session_messages,
+    )
 
 
-def _deduplicate(results: list[dict], context_size: int) -> list[dict]:
-    """Deduplicate results with overlapping context windows."""
-    if not results:
-        return []
-
-    from collections import defaultdict
-    by_session: dict[str, list[dict]] = defaultdict(list)
-    for r in results:
-        by_session[r["session_id"]].append(r)
-
-    dedup_distance = 2 * context_size
-    deduplicated = []
-
-    for session_results in by_session.values():
-        session_results.sort(key=lambda x: x["message_index"])
-        kept = []
-        for r in session_results:
-            if not kept:
-                kept.append(r)
-                continue
-            if r["message_index"] - kept[-1]["message_index"] <= dedup_distance:
-                if r["score"] > kept[-1]["score"]:
-                    kept[-1] = r
-            else:
-                kept.append(r)
-        deduplicated.extend(kept)
-
-    deduplicated.sort(key=lambda x: x["score"], reverse=True)
-    return deduplicated
 
 
-def _get_context(cache: EmbeddingCache, session_id: str, message_index: int,
-                 context_size: int, match_uuid: str) -> list[dict]:
-    """Get context window around a matched message from the cache."""
-    session_msgs = cache.get_session_messages(session_id)
-    if not session_msgs:
-        return []
-
-    # Find the match position
-    match_pos = None
-    for i, msg in enumerate(session_msgs):
-        if msg["uuid"] == match_uuid:
-            match_pos = i
-            break
-
-    if match_pos is None:
-        return []
-
-    start = max(0, match_pos - context_size)
-    end = min(len(session_msgs), match_pos + context_size + 1)
-
-    context = []
-    for msg in session_msgs[start:end]:
-        text = msg["searchable_text"]
-        context.append({
-            "role": msg["role"],
-            "content": text[:2000] + "..." if len(text) > 2000 else text,
-            "timestamp": datetime.fromtimestamp(msg["timestamp"]).isoformat(),
-            "is_match": msg["uuid"] == match_uuid,
-        })
-    return context
 
 
-def _parse_date(value: str | None) -> datetime | None:
-    """Parse ISO 8601 date string."""
-    if value is None:
-        return None
-    try:
-        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        return dt.replace(tzinfo=None) if dt.tzinfo else dt
-    except ValueError:
-        return None
 
 
-def _generate_hint(total: int, offset: int, count: int, max_results: int, has_more: bool) -> str:
-    if total == 0:
-        return "No matches found. Try different search terms or lower the threshold."
-    start, end = offset + 1, offset + count
-    if has_more:
-        return f"Showing {start}-{end} of {total}. Use offset: {offset + max_results} for more."
-    if start == 1:
-        return f"Showing all {total} matches."
-    return f"Showing {start}-{end} of {total} (final page)."
+
 
 
 # --- MCP Tools ---
