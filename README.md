@@ -1,5 +1,9 @@
 # Kiro Ception
 
+<p align="center">
+  <img src="docs/images/header.png" alt="Kiro Ception" width="800" />
+</p>
+
 **Your AI finally remembers what you said last Tuesday — on any machine you said it from.**
 
 Kiro Ception gives Kiro total recall — persistent memory that spans every session, every window, CLI and IDE, and even across multiple machines. Your agent remembers what you discussed yesterday, last month, or six months ago, in any project, on any computer you work from. It automatically indexes all conversation history in the background and provides instant hybrid search (semantic + keyword) so you can find past discussions, decisions, and implementations by meaning, keywords, date, or any combination.
