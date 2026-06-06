@@ -4,6 +4,12 @@
   <img src="docs/images/header.png" alt="Kiro Ception" width="800" />
 </p>
 
+<p align="center">
+  <a href="https://github.com/DevOps-Nirvana/Kiro-Ception">GitHub</a> •
+  <a href="https://github.com/DevOps-Nirvana/Kiro-Ception/issues">Issues</a> •
+  <a href="https://github.com/DevOps-Nirvana/Kiro-Ception/releases">Releases</a>
+</p>
+
 **Your AI now remembers everything you've ever done with it, across every machine you own.** Finally, an elephant-grade memory for your coding assistant — minus the 12,000-pound footprint.
 
 Kiro Ception gives Kiro a long-term memory — persistent recall that spans every session, every window, CLI and IDE, and even across multiple machines. Your agent remembers what you discussed yesterday, last month, or six months ago, in any project, on any computer you work from. It automatically indexes all conversation history in the background and provides instant hybrid search (semantic + keyword) so you can find past discussions, decisions, and implementations by meaning, keywords, date, or any combination.
@@ -329,11 +335,13 @@ The cache DB filename includes a hash of the backend configuration. Changing mod
 
 **Privacy:** All data is processed and stored locally on your machine. No telemetry, no external API calls, and no data leaves your device — unless you explicitly configure a third-party embedding provider (e.g., OpenAI). The default configuration uses fully local, offline embeddings.
 
+## Support
+
+Found a bug? Have a feature request? [Open an issue](https://github.com/DevOps-Nirvana/Kiro-Ception/issues) on GitHub.
+
 ## License
 
 MIT - See: [LICENSE](LICENSE).
-
----
 
 ## Attribution
 
