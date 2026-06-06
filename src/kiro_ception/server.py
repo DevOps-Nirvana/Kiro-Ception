@@ -235,6 +235,23 @@ def get_indexing_status() -> dict:
     # Process uptime
     status["uptime_seconds"] = round(_time.time() - _process_start_time, 1)
 
+    # Process memory usage
+    import resource
+    mem_bytes = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    # macOS reports in bytes, Linux in kilobytes
+    if platform.system() == "Darwin":
+        mem_mb = mem_bytes / (1024 * 1024)
+    else:
+        mem_mb = mem_bytes / 1024
+    status["memory_used_mb"] = round(mem_mb, 1)
+    memory_limit = get_memory_limit()
+    if memory_limit > 0:
+        status["memory_limit_mb"] = round(memory_limit / (1024 * 1024))
+        status["memory_used_percent"] = round(mem_mb / (memory_limit / (1024 * 1024)) * 100, 1)
+    else:
+        status["memory_limit_mb"] = None
+        status["memory_used_percent"] = None
+
     return status
 
 

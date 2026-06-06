@@ -107,6 +107,8 @@ function renderStatus(d) {
   h += row('Rate', d.rate_msg_per_sec + ' msg/s');
   h += row('Elapsed', Math.round(d.elapsed_seconds) + 's');
   h += row('Uptime', Math.round(d.uptime_seconds) + 's');
+  h += row('Memory used', (d.memory_used_mb || 0) + ' MB' + (d.memory_used_percent ? ' (' + d.memory_used_percent + '%)' : ''));
+  if (d.memory_limit_mb) h += row('Memory limit', d.memory_limit_mb + ' MB');
   h += row('Embedding count', d.embedding_count);
   h += row('DB size', (d.db_size_mb || 0) + ' MB');
   h += row('Schema version', d.schema_version || '?');
@@ -378,6 +380,23 @@ class LeaderInstance:
                             status["schema_version"] = None
                             status["fts_enabled"] = False
                         status["uptime_seconds"] = round(time.time() - _process_start_time, 1)
+                        # Process memory usage
+                        import resource
+                        import platform as _platform
+                        mem_bytes = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+                        if _platform.system() == "Darwin":
+                            mem_mb = mem_bytes / (1024 * 1024)
+                        else:
+                            mem_mb = mem_bytes / 1024
+                        status["memory_used_mb"] = round(mem_mb, 1)
+                        from .memory import get_memory_limit
+                        memory_limit = get_memory_limit()
+                        if memory_limit > 0:
+                            status["memory_limit_mb"] = round(memory_limit / (1024 * 1024))
+                            status["memory_used_percent"] = round(mem_mb / (memory_limit / (1024 * 1024)) * 100, 1)
+                        else:
+                            status["memory_limit_mb"] = None
+                            status["memory_used_percent"] = None
                         self._send_json(status)
 
                     elif self.path == "/config":
