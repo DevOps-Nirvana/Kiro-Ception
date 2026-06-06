@@ -6,6 +6,8 @@ become followers that forward requests to the leader.
 """
 
 import os
+import platform
+import time as _time
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
@@ -19,6 +21,9 @@ from .models import Source
 from .search import SearchIndex, get_search_index, handle_search_request, leader_search, search
 
 mcp = FastMCP("kiro-ception")
+
+# Track process start time for uptime reporting
+_process_start_time = _time.time()
 
 # --- Initialization ---
 
@@ -214,6 +219,22 @@ def get_indexing_status() -> dict:
     else:
         status["db_size_mb"] = None
 
+    # Schema and FTS status
+    if indexer.cache:
+        from .migrations import get_schema_version
+        status["schema_version"] = get_schema_version(indexer.cache.conn)
+        try:
+            indexer.cache.conn.execute("SELECT 1 FROM messages_fts LIMIT 0")
+            status["fts_enabled"] = True
+        except Exception:
+            status["fts_enabled"] = False
+    else:
+        status["schema_version"] = None
+        status["fts_enabled"] = False
+
+    # Process uptime
+    status["uptime_seconds"] = round(_time.time() - _process_start_time, 1)
+
     return status
 
 
@@ -294,6 +315,11 @@ def get_config() -> dict:
 
     return {
         "instance": manager.get_role_info(),
+        "version": {
+            "kiro_ception": __import__("kiro_ception").__version__,
+            "python": platform.python_version(),
+            "platform": f"{platform.system()} {platform.machine()}",
+        },
         "paths": {
             "config_file": str(CONFIG_FILE),
             "config_exists": CONFIG_FILE.exists(),

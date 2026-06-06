@@ -557,7 +557,7 @@ class TestGetConfig:
             result = get_config()
 
             expected_keys = {
-                "instance", "paths", "sources", "embedding",
+                "instance", "version", "paths", "sources", "embedding",
                 "search", "memory", "indexing", "server", "peers", "cache",
             }
             assert set(result.keys()) == expected_keys
