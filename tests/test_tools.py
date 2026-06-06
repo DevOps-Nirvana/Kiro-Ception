@@ -66,7 +66,7 @@ class TestSearchProjectHistory:
             patch("kiro_ception.server.get_instance_manager", return_value=manager),
             patch("kiro_ception.server.get_background_indexer", return_value=indexer),
             patch("kiro_ception.server._initialized", True),
-            patch("kiro_ception.server._search_index", None),
+            patch("kiro_ception.search._search_index", None),
         ):
             from kiro_ception.server import search_project_history
 
@@ -84,16 +84,16 @@ class TestSearchProjectHistory:
             patch("kiro_ception.server.get_instance_manager", return_value=manager),
             patch("kiro_ception.server.get_background_indexer", return_value=indexer),
             patch("kiro_ception.server._initialized", True),
-            patch("kiro_ception.server._search_index", None),
+            patch("kiro_ception.search._search_index", None),
             patch("kiro_ception.server._get_current_workspace", return_value="/my/project"),
-            patch("kiro_ception.server._search") as mock_search,
+            patch("kiro_ception.server.search") as mock_search,
         ):
             mock_search.return_value = {"results": [], "query": "test", "total_matches": 0}
             from kiro_ception.server import search_project_history
 
             search_project_history(query="test")
 
-            # Verify workspace was passed (second positional arg to _search)
+            # Verify workspace was passed to search()
             call_kwargs = mock_search.call_args[1]
             assert call_kwargs["workspace"] == "/my/project"
 
@@ -109,7 +109,7 @@ class TestSearchProjectHistory:
             patch("kiro_ception.server.get_background_indexer", return_value=indexer),
             patch("kiro_ception.server._initialized", True),
             patch("kiro_ception.server._get_config", return_value=config),
-            patch("kiro_ception.server._search") as mock_search,
+            patch("kiro_ception.server.search") as mock_search,
         ):
             mock_search.return_value = {"results": [], "query": "test", "total_matches": 0}
             from kiro_ception.server import search_project_history
@@ -134,7 +134,7 @@ class TestSearchProjectHistory:
             patch("kiro_ception.server.get_background_indexer", return_value=indexer),
             patch("kiro_ception.server._initialized", True),
             patch("kiro_ception.server._get_config", return_value=config),
-            patch("kiro_ception.server._search") as mock_search,
+            patch("kiro_ception.server.search") as mock_search,
         ):
             mock_search.return_value = {"results": [], "query": "test", "total_matches": 0}
             from kiro_ception.server import search_project_history
@@ -157,8 +157,8 @@ class TestSearchGlobalHistory:
             patch("kiro_ception.server.get_instance_manager", return_value=manager),
             patch("kiro_ception.server.get_background_indexer", return_value=indexer),
             patch("kiro_ception.server._initialized", True),
-            patch("kiro_ception.server._search_index", None),
-            patch("kiro_ception.server._search") as mock_search,
+            patch("kiro_ception.search._search_index", None),
+            patch("kiro_ception.server.search") as mock_search,
         ):
             mock_search.return_value = {"results": [], "query": "test", "total_matches": 0}
             from kiro_ception.server import search_global_history
@@ -176,8 +176,8 @@ class TestSearchGlobalHistory:
             patch("kiro_ception.server.get_instance_manager", return_value=manager),
             patch("kiro_ception.server.get_background_indexer", return_value=indexer),
             patch("kiro_ception.server._initialized", True),
-            patch("kiro_ception.server._search_index", None),
-            patch("kiro_ception.server._search") as mock_search,
+            patch("kiro_ception.search._search_index", None),
+            patch("kiro_ception.server.search") as mock_search,
         ):
             mock_search.return_value = {"results": [], "query": "test", "total_matches": 0}
             from kiro_ception.server import search_global_history
@@ -194,8 +194,8 @@ class TestSearchGlobalHistory:
             patch("kiro_ception.server.get_instance_manager", return_value=manager),
             patch("kiro_ception.server.get_background_indexer", return_value=indexer),
             patch("kiro_ception.server._initialized", True),
-            patch("kiro_ception.server._search_index", None),
-            patch("kiro_ception.server._search") as mock_search,
+            patch("kiro_ception.search._search_index", None),
+            patch("kiro_ception.server.search") as mock_search,
         ):
             mock_search.return_value = {"results": [], "query": "test", "total_matches": 0}
             from kiro_ception.server import search_global_history
@@ -213,8 +213,8 @@ class TestSearchGlobalHistory:
             patch("kiro_ception.server.get_instance_manager", return_value=manager),
             patch("kiro_ception.server.get_background_indexer", return_value=indexer),
             patch("kiro_ception.server._initialized", True),
-            patch("kiro_ception.server._search_index", None),
-            patch("kiro_ception.server._search") as mock_search,
+            patch("kiro_ception.search._search_index", None),
+            patch("kiro_ception.server.search") as mock_search,
         ):
             mock_search.return_value = {"results": [], "query": "test", "total_matches": 0}
             from kiro_ception.server import search_global_history
@@ -278,6 +278,76 @@ class TestGetIndexingStatus:
 
             assert result["state"] == "unknown"
             assert "error" in result
+
+    def test_includes_search_ready_when_index_loaded(self, mock_leader_setup):
+        """When the search index has messages, search_ready should be True."""
+        manager, indexer = mock_leader_setup
+
+        mock_search_index = MagicMock()
+        mock_search_index.message_count = 47000
+
+        with (
+            patch("kiro_ception.server.get_instance_manager", return_value=manager),
+            patch("kiro_ception.server.get_background_indexer", return_value=indexer),
+            patch("kiro_ception.server.get_search_index", return_value=mock_search_index),
+            patch("kiro_ception.server._initialized", True),
+        ):
+            from kiro_ception.server import get_indexing_status
+
+            result = get_indexing_status()
+
+            assert result["search_ready"] is True
+            assert result["search_message_count"] == 47000
+
+    def test_search_ready_false_when_index_empty(self, mock_leader_setup):
+        """When the search index is empty, search_ready should be False."""
+        manager, indexer = mock_leader_setup
+
+        mock_search_index = MagicMock()
+        mock_search_index.message_count = 0
+
+        with (
+            patch("kiro_ception.server.get_instance_manager", return_value=manager),
+            patch("kiro_ception.server.get_background_indexer", return_value=indexer),
+            patch("kiro_ception.server.get_search_index", return_value=mock_search_index),
+            patch("kiro_ception.server._initialized", True),
+        ):
+            from kiro_ception.server import get_indexing_status
+
+            result = get_indexing_status()
+
+            assert result["search_ready"] is False
+            assert result["search_message_count"] == 0
+
+    def test_includes_last_completed_at(self, mock_leader_setup):
+        """Status should include last_completed_at from the indexer."""
+        manager, indexer = mock_leader_setup
+
+        # Simulate a prior successful run
+        indexer.status.to_dict.return_value = {
+            "state": "indexing",
+            "sessions_total": 4333,
+            "sessions_processed": 0,
+            "embedding_count": 26000,
+            "last_completed_at": "2026-06-05T22:00:00",
+            "errors": 0,
+        }
+
+        mock_search_index = MagicMock()
+        mock_search_index.message_count = 47000
+
+        with (
+            patch("kiro_ception.server.get_instance_manager", return_value=manager),
+            patch("kiro_ception.server.get_background_indexer", return_value=indexer),
+            patch("kiro_ception.server.get_search_index", return_value=mock_search_index),
+            patch("kiro_ception.server._initialized", True),
+        ):
+            from kiro_ception.server import get_indexing_status
+
+            result = get_indexing_status()
+
+            assert result["last_completed_at"] == "2026-06-05T22:00:00"
+            assert result["search_ready"] is True
 
 
 # --- rescan ---
@@ -611,7 +681,7 @@ class TestGetConfig:
             assert "leader_info" in paths
 
 
-# --- _leader_search edge cases ---
+# --- leader_search edge cases ---
 
 
 class TestLeaderSearch:
@@ -620,15 +690,14 @@ class TestLeaderSearch:
         indexer.backend = None
 
         with (
-            patch("kiro_ception.server.get_instance_manager", return_value=manager),
-            patch("kiro_ception.server.get_background_indexer", return_value=indexer),
-            patch("kiro_ception.server._initialized", True),
-            patch("kiro_ception.server._search_index", None),
-            patch("kiro_ception.server.get_embedding_backend", side_effect=RuntimeError("not ready")),
+            patch("kiro_ception.search.get_instance_manager", return_value=manager),
+            patch("kiro_ception.search.get_background_indexer", return_value=indexer),
+            patch("kiro_ception.search._search_index", None),
+            patch("kiro_ception.search.get_embedding_backend", side_effect=RuntimeError("not ready")),
         ):
-            from kiro_ception.server import _leader_search
+            from kiro_ception.search import leader_search
 
-            result = _leader_search(
+            result = leader_search(
                 query="test",
                 workspace=None,
                 source=None,
@@ -654,14 +723,12 @@ class TestLeaderSearch:
         mock_index.embedding_count_hint = 5000
 
         with (
-            patch("kiro_ception.server.get_instance_manager", return_value=manager),
-            patch("kiro_ception.server.get_background_indexer", return_value=indexer),
-            patch("kiro_ception.server._initialized", True),
-            patch("kiro_ception.server._get_search_index", return_value=mock_index),
+            patch("kiro_ception.search.get_background_indexer", return_value=indexer),
+            patch("kiro_ception.search.get_search_index", return_value=mock_index),
         ):
-            from kiro_ception.server import _leader_search
+            from kiro_ception.search import leader_search
 
-            result = _leader_search(
+            result = leader_search(
                 query="test",
                 workspace=None,
                 source=None,
@@ -685,14 +752,12 @@ class TestLeaderSearch:
         mock_index.is_loading = False
 
         with (
-            patch("kiro_ception.server.get_instance_manager", return_value=manager),
-            patch("kiro_ception.server.get_background_indexer", return_value=indexer),
-            patch("kiro_ception.server._initialized", True),
-            patch("kiro_ception.server._get_search_index", return_value=mock_index),
+            patch("kiro_ception.search.get_background_indexer", return_value=indexer),
+            patch("kiro_ception.search.get_search_index", return_value=mock_index),
         ):
-            from kiro_ception.server import _leader_search
+            from kiro_ception.search import leader_search
 
-            result = _leader_search(
+            result = leader_search(
                 query="test",
                 workspace=None,
                 source=None,

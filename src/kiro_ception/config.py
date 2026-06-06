@@ -12,7 +12,6 @@ DEFAULT_CONFIG = Path(__file__).parent.parent.parent / "config.default.toml"
 
 # Embedding constants
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
-EMBEDDING_DIM = 384
 
 # Memory constants
 BYTES_PER_MESSAGE = 2600
@@ -31,23 +30,6 @@ def find_first_existing(paths: list[str]) -> Path | None:
         if expanded.exists():
             return expanded
     return None
-
-
-def find_first_matching_glob(patterns: list[str]) -> tuple[Path | None, str | None]:
-    """Return (parent_dir, pattern) for first pattern with matches."""
-    for pattern in patterns:
-        expanded = expand_path(pattern)
-        # Get the non-glob prefix as parent
-        parts = expanded.parts
-        parent_parts = []
-        for part in parts:
-            if "*" in part:
-                break
-            parent_parts.append(part)
-        parent = Path(*parent_parts) if parent_parts else Path(".")
-        if parent.exists() and list(parent.glob(str(expanded.relative_to(parent)))):
-            return parent, pattern
-    return None, None
 
 
 @dataclass
@@ -117,14 +99,6 @@ class EmbeddingConfig:
     @property
     def cache_path(self) -> Path:
         return expand_path(self.cache_dir)
-
-    @property
-    def cache_file(self) -> Path:
-        return self.cache_path / "embeddings.pkl"
-
-    @property
-    def lock_file(self) -> Path:
-        return self.cache_path / "embeddings.lock"
 
 
 @dataclass

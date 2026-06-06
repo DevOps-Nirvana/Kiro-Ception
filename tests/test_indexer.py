@@ -15,9 +15,9 @@ import pytest
 from kiro_ception.background_indexer import BackgroundIndexer, IndexerState, IndexingStatus
 from kiro_ception.cache import EmbeddingCache
 from kiro_ception.config import Config, EmbeddingConfig, IndexingConfig
-from kiro_ception.indexer import select_sessions_within_limit
+from kiro_ception.memory import select_sessions_within_limit
 from kiro_ception.models import IndexedMessage, SessionInfo, Source
-from kiro_ception.server import SearchIndex
+from kiro_ception.search import SearchIndex
 
 
 # --- Fixtures ---
@@ -231,6 +231,31 @@ class TestIndexingStatus:
         status = IndexingStatus(state=IndexerState.IDLE, rate=10.0)
         assert status.eta_seconds == 0.0
 
+    def test_last_completed_at_in_to_dict(self):
+        completed = time.time() - 300  # 5 minutes ago
+        status = IndexingStatus(
+            state=IndexerState.INDEXING,
+            sessions_total=100,
+            started_at=time.time(),
+            last_completed_at=completed,
+        )
+        d = status.to_dict()
+
+        assert "last_completed_at" in d
+        assert d["last_completed_at"] is not None
+        # Should be an ISO formatted string
+        assert "T" in d["last_completed_at"]
+
+    def test_last_completed_at_none_on_first_run(self):
+        status = IndexingStatus(
+            state=IndexerState.INDEXING,
+            sessions_total=100,
+            started_at=time.time(),
+        )
+        d = status.to_dict()
+
+        assert d["last_completed_at"] is None
+
 
 # --- Full indexing pipeline ---
 
@@ -271,7 +296,7 @@ class TestIndexingPipeline:
         assert cache.indexed_session_count == 3
 
         # Step 2: Build SearchIndex from cache
-        with patch("kiro_ception.server.get_background_indexer") as mock_get_indexer:
+        with patch("kiro_ception.search.get_background_indexer") as mock_get_indexer:
             indexer_mock = MagicMock()
             indexer_mock.cache = cache
             mock_get_indexer.return_value = indexer_mock
@@ -312,7 +337,7 @@ class TestIndexingPipeline:
             embeddings = mock_backend.encode(texts_to_embed)
             cache.put_embeddings_batch(list(zip(hashes_to_embed, embeddings)))
 
-        with patch("kiro_ception.server.get_background_indexer") as mock_get_indexer:
+        with patch("kiro_ception.search.get_background_indexer") as mock_get_indexer:
             indexer_mock = MagicMock()
             indexer_mock.cache = cache
             mock_get_indexer.return_value = indexer_mock
@@ -353,7 +378,7 @@ class TestIndexingPipeline:
             embeddings = mock_backend.encode(texts_to_embed)
             cache.put_embeddings_batch(list(zip(hashes_to_embed, embeddings)))
 
-        with patch("kiro_ception.server.get_background_indexer") as mock_get_indexer:
+        with patch("kiro_ception.search.get_background_indexer") as mock_get_indexer:
             indexer_mock = MagicMock()
             indexer_mock.cache = cache
             mock_get_indexer.return_value = indexer_mock
@@ -393,7 +418,7 @@ class TestIndexingPipeline:
             embeddings = mock_backend.encode(texts_to_embed)
             cache.put_embeddings_batch(list(zip(hashes_to_embed, embeddings)))
 
-        with patch("kiro_ception.server.get_background_indexer") as mock_get_indexer:
+        with patch("kiro_ception.search.get_background_indexer") as mock_get_indexer:
             indexer_mock = MagicMock()
             indexer_mock.cache = cache
             mock_get_indexer.return_value = indexer_mock
@@ -434,7 +459,7 @@ class TestIndexingPipeline:
             embeddings = mock_backend.encode(texts_to_embed)
             cache.put_embeddings_batch(list(zip(hashes_to_embed, embeddings)))
 
-        with patch("kiro_ception.server.get_background_indexer") as mock_get_indexer:
+        with patch("kiro_ception.search.get_background_indexer") as mock_get_indexer:
             indexer_mock = MagicMock()
             indexer_mock.cache = cache
             mock_get_indexer.return_value = indexer_mock
@@ -511,7 +536,7 @@ class TestBackgroundIndexer:
 
 class TestSearchIndexRefresh:
     def test_empty_cache_stays_empty(self, cache):
-        with patch("kiro_ception.server.get_background_indexer") as mock_get_indexer:
+        with patch("kiro_ception.search.get_background_indexer") as mock_get_indexer:
             indexer_mock = MagicMock()
             indexer_mock.cache = cache
             mock_get_indexer.return_value = indexer_mock
@@ -527,7 +552,7 @@ class TestSearchIndexRefresh:
         # Put an embedding but no messages
         cache.put_embedding("hash1", np.random.randn(128).astype(np.float32))
 
-        with patch("kiro_ception.server.get_background_indexer") as mock_get_indexer:
+        with patch("kiro_ception.search.get_background_indexer") as mock_get_indexer:
             indexer_mock = MagicMock()
             indexer_mock.cache = cache
             mock_get_indexer.return_value = indexer_mock
@@ -547,7 +572,7 @@ class TestSearchIndexRefresh:
         cache.conn.commit()
         cache.put_embedding(text_hash, np.random.randn(128).astype(np.float32))
 
-        with patch("kiro_ception.server.get_background_indexer") as mock_get_indexer:
+        with patch("kiro_ception.search.get_background_indexer") as mock_get_indexer:
             indexer_mock = MagicMock()
             indexer_mock.cache = cache
             mock_get_indexer.return_value = indexer_mock
@@ -571,7 +596,7 @@ class TestSearchIndexRefresh:
 
     def test_refresh_not_throttled_before_first_load(self, cache):
         """Before first successful load, every refresh attempt is allowed."""
-        with patch("kiro_ception.server.get_background_indexer") as mock_get_indexer:
+        with patch("kiro_ception.search.get_background_indexer") as mock_get_indexer:
             indexer_mock = MagicMock()
             indexer_mock.cache = cache
             mock_get_indexer.return_value = indexer_mock

@@ -9,16 +9,15 @@ import hashlib
 import logging
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 
 from .cache import EmbeddingCache
 from .config import get_config
 from .embeddings import EmbeddingBackend, get_embedding_backend
-from .indexer import get_memory_limit, select_sessions_within_limit
-from .loader import list_all_sessions, load_session_messages
-from .models import Source
+from .memory import get_memory_limit, select_sessions_within_limit
+from .sessions import list_all_sessions, load_session_messages
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +47,7 @@ class IndexingStatus:
     rate: float = 0.0  # messages per second
     started_at: float | None = None
     completed_at: float | None = None
+    last_completed_at: float | None = None  # Timestamp of last successful pass (persists across rescans)
     last_error: str = ""
     embedding_count: int = 0  # Total embeddings in cache
 
@@ -92,6 +92,7 @@ class IndexingStatus:
             "embedding_count": self.embedding_count,
             "started_at": datetime.fromtimestamp(self.started_at).isoformat() if self.started_at else None,
             "completed_at": datetime.fromtimestamp(self.completed_at).isoformat() if self.completed_at else None,
+            "last_completed_at": datetime.fromtimestamp(self.last_completed_at).isoformat() if self.last_completed_at else None,
         }
 
 
@@ -169,9 +170,33 @@ class BackgroundIndexer:
             self._backend = get_embedding_backend()
             fingerprint = self._backend.fingerprint()
 
-            # Open cache
-            self._cache = EmbeddingCache(fingerprint)
-            self._status.embedding_count = self._cache.embedding_count
+            # Open cache (handle corruption by deleting and retrying)
+            try:
+                self._cache = EmbeddingCache(fingerprint)
+                self._status.embedding_count = self._cache.embedding_count
+            except Exception as e:
+                logger.warning(f"Cache database appears corrupt, recreating: {e}")
+                import os
+                db_path = self._cache._db_path if self._cache else None
+                if db_path is None:
+                    from .cache import _get_cache_db_path
+                    db_path = _get_cache_db_path(fingerprint)
+                # Remove corrupt file and WAL/SHM companions
+                for suffix in ("", "-wal", "-shm"):
+                    try:
+                        os.unlink(str(db_path) + suffix)
+                    except OSError:
+                        pass
+                self._cache = EmbeddingCache(fingerprint)
+                self._status.embedding_count = 0
+
+            # Restore last_completed_at from prior run
+            stored = self._cache.get_meta("last_completed_at")
+            if stored:
+                try:
+                    self._status.last_completed_at = float(stored)
+                except (ValueError, TypeError):
+                    pass
 
             # Check for force reindex
             if self._reindex_event.is_set():
@@ -180,7 +205,7 @@ class BackgroundIndexer:
                 logger.info("Force reindex: session state cleared")
 
             # Run initial indexing
-            self._index_loop(config)
+            self._index_pass(config)
 
             # Periodic rescan loop
             rescan_interval = config.indexing.rescan_interval_minutes * 60
@@ -212,6 +237,33 @@ class BackgroundIndexer:
                 config = get_config()
                 rescan_interval = config.indexing.rescan_interval_minutes * 60
 
+                # Check if embedding backend config changed (model, dimensions, etc.)
+                new_backend = get_embedding_backend()
+                new_fingerprint = new_backend.fingerprint()
+                if new_fingerprint != fingerprint:
+                    logger.info(
+                        f"Embedding config changed: {fingerprint} → {new_fingerprint}. "
+                        f"Switching to new cache database."
+                    )
+                    self._backend = new_backend
+                    fingerprint = new_fingerprint
+                    self._cache = EmbeddingCache(fingerprint)
+                    self._status.embedding_count = self._cache.embedding_count
+
+                    # Invalidate the search index so it reloads from the new cache
+                    from .search import invalidate_search_index
+                    invalidate_search_index()
+
+                    # Restore last_completed_at from the new cache (if any)
+                    stored = self._cache.get_meta("last_completed_at")
+                    if stored:
+                        try:
+                            self._status.last_completed_at = float(stored)
+                        except (ValueError, TypeError):
+                            self._status.last_completed_at = None
+                    else:
+                        self._status.last_completed_at = None
+
                 # Reset status for new scan
                 self._status.state = IndexerState.DISCOVERING
                 self._status.sessions_processed = 0
@@ -224,7 +276,7 @@ class BackgroundIndexer:
                 self._status.completed_at = None
 
                 # Run rescan
-                self._index_loop(config)
+                self._index_pass(config)
 
         except Exception as e:
             self._status.state = IndexerState.ERROR
@@ -234,10 +286,16 @@ class BackgroundIndexer:
             self._status.completed_at = time.time()
             if self._status.state not in (IndexerState.ERROR,):
                 self._status.state = IndexerState.IDLE
+                self._status.last_completed_at = self._status.completed_at
+                # Persist to SQLite so it survives restarts
+                if self._cache:
+                    self._cache.set_meta(
+                        "last_completed_at", str(self._status.last_completed_at)
+                    )
             self._status.embedding_count = self._cache.embedding_count if self._cache else 0
 
-    def _index_loop(self, config):
-        """Discover and index sessions."""
+    def _index_pass(self, config):
+        """Discover and index sessions in a single pass."""
         self._status.state = IndexerState.DISCOVERING
 
         # Discover sessions

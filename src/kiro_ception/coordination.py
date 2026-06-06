@@ -284,10 +284,16 @@ class FollowerInstance:
     @property
     def leader_port(self) -> int | None:
         if self._leader_port is None:
-            info = _read_leader_info()
-            if info:
-                self._leader_port = info.get("port")
+            self._refresh_leader_port()
         return self._leader_port
+
+    def _refresh_leader_port(self):
+        """Re-read leader port from disk (handles leader restarts on new port)."""
+        info = _read_leader_info()
+        if info:
+            self._leader_port = info.get("port")
+        else:
+            self._leader_port = None
 
     def _get_session(self):
         if self._session is None:
@@ -312,9 +318,16 @@ class FollowerInstance:
     def search(self, request: dict) -> dict:
         """Forward a search request to the leader."""
         session = self._get_session()
-        resp = session.post(f"{self._base_url()}/search", json=request, timeout=30)
-        resp.raise_for_status()
-        return resp.json()
+        try:
+            resp = session.post(f"{self._base_url()}/search", json=request, timeout=30)
+            resp.raise_for_status()
+            return resp.json()
+        except (ConnectionError, OSError):
+            # Leader may have restarted on a different port — refresh and retry
+            self._refresh_leader_port()
+            resp = session.post(f"{self._base_url()}/search", json=request, timeout=30)
+            resp.raise_for_status()
+            return resp.json()
 
     def get_status(self) -> dict:
         """Get indexing status from leader."""
@@ -334,13 +347,6 @@ class FollowerInstance:
         """Tell leader to reindex."""
         session = self._get_session()
         resp = session.post(f"{self._base_url()}/reindex", json={}, timeout=5)
-        resp.raise_for_status()
-        return resp.json()
-
-    def get_role(self) -> dict:
-        """Get leader's role info."""
-        session = self._get_session()
-        resp = session.get(f"{self._base_url()}/role", timeout=5)
         resp.raise_for_status()
         return resp.json()
 

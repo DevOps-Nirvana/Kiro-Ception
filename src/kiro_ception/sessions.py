@@ -25,13 +25,3 @@ def load_session_messages(session: SessionInfo) -> list[IndexedMessage]:
     if session.source == Source.CLI:
         return load_cli_session_messages(session)
     return load_ide_session_messages(session)
-
-
-def load_messages_for_sessions(
-    sessions: list[SessionInfo],
-) -> list[IndexedMessage]:
-    """Load messages for multiple sessions."""
-    messages = []
-    for session in sessions:
-        messages.extend(load_session_messages(session))
-    return messages

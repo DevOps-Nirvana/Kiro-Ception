@@ -16,6 +16,8 @@ Kiro Ception is an [MCP Power](https://kiro.dev/docs/powers/) that runs as a bac
 4. **Indexes** everything into an in-memory numpy matrix for instant cosine similarity search
 5. **Serves** search results via MCP tools that Kiro can call naturally during conversation
 
+Sessions are processed **newest first**, so your most recent conversations are searchable within seconds of startup — even while older history is still being indexed in the background.
+
 Search results include surrounding context (messages before/after each match), relevance scores, workspace origin, and pagination — so Kiro gets the full picture of what was discussed.
 
 ### Architecture Highlights
@@ -101,16 +103,7 @@ batch_size = 1
 ollama pull qwen3-embedding:4b
 ```
 
-This gives significantly better search quality than MiniLM, especially for nuanced queries. The `4b` model runs comfortably on a 6GB+ GPU. For even better quality with more VRAM:
-
-```toml
-[embedding]
-backend = "openai-compatible"
-model = "qwen3-embedding:8b"
-api_base = "http://localhost:11434/v1"
-dimensions = 2048
-batch_size = 1
-```
+This gives significantly better search quality than MiniLM, especially for nuanced queries. The `4b` model runs comfortably on a 6GB+ GPU and indexes at ~3–5 messages/second.
 
 ### OpenAI / Hosted Providers
 
@@ -175,7 +168,7 @@ Both search tools accept:
 | Build | [hatchling](https://hatch.pypa.io/) | PEP 517 build backend |
 | Package Manager | [uv](https://docs.astral.sh/uv/) | Fast dependency resolution and venv management |
 | Linter/Formatter | [ruff](https://docs.astral.sh/ruff/) | Linting and formatting |
-| Tests | [pytest](https://pytest.org/) | Test framework (245+ tests) |
+| Tests | [pytest](https://pytest.org/) | Test framework (300 tests) |
 
 ## Optional Features
 
@@ -214,7 +207,7 @@ throttle_ms = 5000   # Sleep 5000ms (5 seconds) between embedding batches (defau
 rescan_interval_minutes = 10  # Check for new sessions every 10 minutes (this is the default)
 ```
 
-Once your initial index is built, it can be quite nice to add the throttle_ms value of 5-10 seconds (5000-10000) to ensure your computer runs quickly and your usage is not negatively affected.  This is especially valuable if you are using a large local GPU-based model (like the Qwen 8B embedding model).
+Once your initial index is built, it can be quite nice to add the throttle_ms value of 5-10 seconds (5000-10000) to ensure your computer runs quickly and your usage is not negatively affected.  This is especially valuable if you are using a large local GPU-based model.
 
 Secondarily, if you are trying to be sparing on battery life, and/or if you don't care about getting your index up to date so quickly, you can greatly increase the rescan interval to 60 minutes, OR you can disable this automated rescan/reindexing process by setting this to 0.
 
@@ -223,14 +216,15 @@ Secondarily, if you are trying to be sparing on battery life, and/or if you don'
 
 | Metric | Value |
 |--------|-------|
-| First-time indexing (MiniLM) | ~4 minutes (4300+ sessions) |
-| First-time indexing (Qwen3-Embedding:4b) | ~35 minutes (4300+ sessions) |
-| First-time indexing (Qwen3-Embedding:8b) | ~70 minutes (4300+ sessions) |
+| First-time indexing (MiniLM, CPU) | ~4 minutes (4300+ sessions) |
+| First-time indexing (Qwen3-Embedding:4b, GPU) | ~35 minutes (4300+ sessions) |
 | Subsequent startups | <2 seconds |
 | Search latency | <10ms |
 | Index refresh (backgrounded) | Every 60 seconds |
 | Periodic rescan to update indexes (backgrounded) | Every 10 minutes |
-| Embedding rate | ~3–5 messages/second (qwen3-embedding:4b) |
+| Embedding rate (Qwen3-Embedding:4b) | ~3–5 messages/second |
+
+**Indexing order:** Sessions are indexed **newest first**, so your most recent conversations become searchable within seconds of startup. Older conversations fill in progressively in the background.
 
 ## Troubleshooting
 
@@ -273,7 +267,7 @@ When you Restart Kiro (or re-enable  MCP) it will rebuild the embeddings databas
 
 ```bash
 uv sync                         # Install deps
-uv run pytest tests/ -q         # Run tests (245+, ~10s)
+uv run pytest tests/ -q         # Run tests (300, ~30s)
 uv run ruff check src/          # Lint
 uv run kiro-ception             # Run MCP server locally
 ```

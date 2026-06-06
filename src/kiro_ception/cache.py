@@ -303,3 +303,20 @@ class EmbeddingCache:
         """Get all stored exec file paths and their mtimes."""
         cursor = self.conn.execute("SELECT exec_file_path, file_mtime FROM execution_index")
         return {row[0]: row[1] for row in cursor}
+
+    # --- Metadata operations ---
+
+    def get_meta(self, key: str) -> str | None:
+        """Get a metadata value by key."""
+        row = self.conn.execute(
+            "SELECT value FROM meta WHERE key = ?", (key,)
+        ).fetchone()
+        return row[0] if row else None
+
+    def set_meta(self, key: str, value: str):
+        """Set a metadata value."""
+        self.conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+            (key, value),
+        )
+        self.conn.commit()

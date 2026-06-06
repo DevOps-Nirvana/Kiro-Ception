@@ -3,7 +3,7 @@
 from datetime import datetime
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 class Source(str, Enum):
@@ -40,44 +40,3 @@ class SessionInfo(BaseModel):
     def timestamp_fallback(self) -> datetime:
         """Get a timestamp for sorting, with fallback to epoch."""
         return self.modified or self.created or datetime.min
-
-
-class MatchedMessage(BaseModel):
-    """A message that matched a search query."""
-
-    role: str
-    content: str
-    timestamp: datetime
-    workspace: str
-    session_id: str
-    uuid: str
-    source: Source
-
-
-class ContextMessage(BaseModel):
-    """A message in the context window around a match."""
-
-    role: str
-    content: str
-    timestamp: datetime
-    is_match: bool = False
-
-
-class SearchResult(BaseModel):
-    """A search result with context."""
-
-    matched_message: MatchedMessage
-    score: float
-    context: list[ContextMessage] = Field(default_factory=list)
-
-
-class SearchResponse(BaseModel):
-    """Response from search tools."""
-
-    results: list[SearchResult]
-    query: str
-    total_matches: int
-    offset: int = 0
-    has_more: bool = False
-    excluded_sessions: int = 0
-    hint: str | None = None

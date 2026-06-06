@@ -32,12 +32,12 @@ cache_dir = "~/.cache/kiro-ception"
 # api_key = ""                            # Required for hosted providers, optional for local
 # dimensions = 1024                       # Output dimensions (omit for model default)
 
-# Example: Ollama with qwen3-embedding:8b
+# Example: Ollama with qwen3-embedding:4b
 # backend = "openai-compatible"
-# model = "qwen3-embedding:8b"
+# model = "qwen3-embedding:4b"
 # api_base = "http://localhost:11434/v1"
-# dimensions = 2048
-# batch_size = 1  # 1 for large models, higher for small/fast models, typically a max of 16 for LLMs.  The default is 16
+# dimensions = 1024
+# batch_size = 1  # 1 us recommended for large/gpu models, higher for small/fast models, typically a max of 16 for LLMs.  The default is 16
 
 # Example: OpenAI text-embedding-3-large
 # backend = "openai-compatible"

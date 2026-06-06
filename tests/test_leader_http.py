@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
-from kiro_ception.leader import LeaderInstance
+from kiro_ception.coordination import LeaderInstance
 
 
 @pytest.fixture
@@ -19,8 +19,8 @@ def leader_server(tmp_path, monkeypatch):
     """Start a real leader HTTP server on a free port."""
     lock_path = tmp_path / "leader.lock"
     info_path = tmp_path / "leader.json"
-    monkeypatch.setattr("kiro_ception.leader._get_lock_path", lambda: lock_path)
-    monkeypatch.setattr("kiro_ception.leader._get_leader_info_path", lambda: info_path)
+    monkeypatch.setattr("kiro_ception.coordination._get_lock_path", lambda: lock_path)
+    monkeypatch.setattr("kiro_ception.coordination._get_leader_info_path", lambda: info_path)
 
     # Use a random high port to avoid conflicts
     import socket
@@ -31,7 +31,7 @@ def leader_server(tmp_path, monkeypatch):
 
     from kiro_ception.config import Config, ServerConfig
     config = Config(server=ServerConfig(leader_port=port))
-    monkeypatch.setattr("kiro_ception.leader.get_config", lambda: config)
+    monkeypatch.setattr("kiro_ception.coordination.get_config", lambda: config)
 
     leader = LeaderInstance()
     leader._port = port

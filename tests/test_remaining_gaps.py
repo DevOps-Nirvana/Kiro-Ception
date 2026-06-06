@@ -85,16 +85,16 @@ class TestCLIExtractTextFromContent:
 
 
 class TestFollowerPromotion:
-    """Test the _search() path where a follower fails to reach leader and promotes."""
+    """Test the search() path where a follower fails to reach leader and promotes."""
 
     def test_follower_promotes_on_leader_failure(self, tmp_path, monkeypatch):
         """When follower can't reach leader, it should promote to leader."""
         lock_path = tmp_path / "leader.lock"
         info_path = tmp_path / "leader.json"
-        monkeypatch.setattr("kiro_ception.leader._get_lock_path", lambda: lock_path)
-        monkeypatch.setattr("kiro_ception.leader._get_leader_info_path", lambda: info_path)
+        monkeypatch.setattr("kiro_ception.coordination._get_lock_path", lambda: lock_path)
+        monkeypatch.setattr("kiro_ception.coordination._get_leader_info_path", lambda: info_path)
 
-        from kiro_ception.leader import InstanceManager
+        from kiro_ception.coordination import InstanceManager
 
         # Set up a manager in follower state with a dead leader
         manager = InstanceManager()
@@ -109,20 +109,20 @@ class TestFollowerPromotion:
         search_handler = MagicMock()
 
         with (
-            patch("kiro_ception.server.get_instance_manager", return_value=manager),
+            patch("kiro_ception.search.get_instance_manager", return_value=manager),
             patch("kiro_ception.server._initialized", True),
-            patch("kiro_ception.server.get_background_indexer") as mock_get_indexer,
-            patch("kiro_ception.server._leader_search") as mock_leader_search,
+            patch("kiro_ception.search.get_background_indexer") as mock_get_indexer,
+            patch("kiro_ception.search.leader_search") as mock_leader_search,
         ):
             mock_get_indexer.return_value.start = MagicMock()
             mock_leader_search.return_value = {
                 "results": [], "query": "test", "total_matches": 0
             }
 
-            from kiro_ception.server import _search
+            from kiro_ception.search import search
             from kiro_ception.models import Source
 
-            result = _search(
+            result = search(
                 query="test",
                 workspace=None,
                 source=None,

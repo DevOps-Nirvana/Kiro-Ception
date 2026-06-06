@@ -44,7 +44,7 @@
 After modifying code:
 ```bash
 uv sync                              # Rebuild package in venv
-uv run pytest tests/ -q              # Run test suite (245 tests, ~10s)
+uv run pytest tests/ -q              # Run test suite (300 tests, ~34s)
 uv run kiro-ception                  # Test MCP server starts (Ctrl+C to exit)
 ```
 
@@ -81,6 +81,8 @@ tests/
 ├── test_leader.py                     # Leader-follower coordination, file locks, promotion
 ├── test_leader_http.py                # Real HTTP server integration (all endpoints)
 ├── test_background_indexer_live.py    # Live threading: indexer start → completion → cache verify
+├── test_peers.py                      # Peer federation: crypto, fan-out, result merging, encryption
+├── test_edge_cases.py                 # Edge case coverage: malformed data, boundary conditions
 └── test_remaining_gaps.py             # CLI extract, follower promotion, TOML loading, exec index
 ```
 
@@ -91,11 +93,13 @@ tests/
 - `test_config.py` — dataclass construction and diffing
 - `test_tools.py` — MCP tools with mocked indexer/manager
 - `test_ide_loader.py` — message filtering and text processing
+- `test_edge_cases.py` — boundary conditions and malformed data
 
 **Tier 2 — Integration tests (temp files/DBs, fast):**
 - `test_cache.py` — real SQLite in tmp_path
 - `test_embeddings.py` — mocked HTTP for OpenAI-compatible backend
 - `test_session_loading.py` — fixture files parsed by real loaders
+- `test_peers.py` — crypto round-trips, result merging, fan-out (mocked HTTP)
 
 **Tier 3 — System tests (threads, HTTP, slower):**
 - `test_indexer.py` — full indexing pipeline with fixture corpus
@@ -131,7 +135,7 @@ tests/
 1. Define the function with `@mcp.tool()` decorator in `server.py`
 2. Add `_ensure_initialized()` at the top of the function
 3. Handle leader/follower routing if the tool needs indexer/cache access
-4. Add corresponding HTTP endpoint in `leader.py` if followers need it
+4. Add corresponding HTTP endpoint in `coordination.py` if followers need it
 5. Add follower method in `FollowerInstance` class
 6. Add tests in `tests/test_tools.py`
 7. Update POWER.md tool table and trigger scenarios
@@ -172,18 +176,18 @@ Old cache files are preserved for rollback.
 
 ```
 src/kiro_ception/
-├── server.py              # MCP tools + SearchIndex (read path)
+├── server.py              # MCP tools + initialization (deferred startup)
+├── search.py              # SearchIndex (in-memory numpy) + search routing (leader/follower/peers)
 ├── background_indexer.py  # Background thread (write path)
 ├── search_utils.py        # Pure search post-processing functions (testable)
-├── peers.py               # Cross-machine federation (fan-out, merge, encryption)
-├── peer_crypto.py         # Argon2id key derivation + AES-256-GCM
+├── peers.py               # Cross-machine federation (fan-out, merge, Argon2id + AES-256-GCM encryption)
+├── coordination.py        # Leader-follower coordination (file locks, HTTP server, failover)
 ├── cache.py               # SQLite-backed storage
 ├── config.py              # TOML config loading
 ├── embeddings.py          # Embedding backend abstraction
 ├── ide_loader.py          # IDE conversation loader
 ├── cli_loader.py          # CLI conversation loader
-├── loader.py              # Unified loader facade
-├── leader.py              # Leader-follower coordination
-├── indexer.py             # Memory limit utilities
+├── sessions.py            # Unified loader facade (combines CLI + IDE)
+├── memory.py              # Memory limit utilities (get_memory_limit, select_sessions_within_limit)
 └── models.py              # Pydantic data models
 ```

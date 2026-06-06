@@ -1,4 +1,4 @@
-"""FastMCP server for Kiro Ception.
+"""FastMCP server for Kiro Ception — MCP tool definitions and entrypoint.
 
 Uses a leader-follower pattern: the first instance becomes the leader
 (holds embeddings in RAM, runs indexer, serves HTTP). Additional instances
@@ -6,29 +6,17 @@ become followers that forward requests to the leader.
 """
 
 import os
-import time
-from datetime import datetime
 from pathlib import Path
 
-import numpy as np
 from mcp.server.fastmcp import FastMCP
 
 from .background_indexer import get_background_indexer
 from .config import get_config as _get_config
 from .config import expand_path
-from .embeddings import get_embedding_backend
-from .indexer import get_memory_limit
-from .leader import get_instance_manager
+from .coordination import get_instance_manager
+from .memory import get_memory_limit
 from .models import Source
-from .peers import fan_out_search, merge_peer_results
-from .search_utils import (
-    build_context_window,
-    deduplicate_results,
-    format_search_response,
-    generate_hint,
-    parse_date,
-    truncate_content,
-)
+from .search import SearchIndex, get_search_index, handle_search_request, leader_search, search
 
 mcp = FastMCP("kiro-ception")
 
@@ -48,7 +36,7 @@ def _ensure_initialized():
     _initialized = True
 
     manager = get_instance_manager()
-    role = manager.initialize(search_handler=_handle_search_request)
+    role = manager.initialize(search_handler=handle_search_request)
 
     if role == "leader":
         # Start background indexer (only leader indexes)
@@ -56,206 +44,7 @@ def _ensure_initialized():
         indexer.start()
         # Eagerly load the search index from existing cache so the first
         # search doesn't hit an empty matrix (if prior data exists in SQLite)
-        _get_search_index()
-
-
-def _handle_search_request(request: dict) -> dict:
-    """Handle a search request (used by both leader directly and HTTP API)."""
-    return _search(
-        query=request.get("query", ""),
-        workspace=request.get("workspace"),
-        source=Source(request["source"]) if request.get("source") else None,
-        after=request.get("after"),
-        before=request.get("before"),
-        context_size=request.get("context_size", 3),
-        threshold=request.get("threshold", 0.2),
-        max_results=request.get("max_results", 10),
-        offset=request.get("offset", 0),
-    )
-
-
-# --- In-Memory Search Index (leader only) ---
-
-_MIN_REFRESH_INTERVAL = 60  # seconds
-
-
-class SearchIndex:
-    """In-memory numpy matrix for fast vectorized cosine similarity search.
-
-    Loaded from the SQLite cache. Refreshes at most once per minute to pick
-    up new embeddings from the background indexer.
-    """
-
-    def __init__(self):
-        self._embeddings: np.ndarray | None = None  # shape: (N, dims)
-        self._metadata: list[dict] = []  # parallel to embeddings rows
-        self._last_refresh: float = 0
-        self._count: int = 0
-        self._loading: bool = False  # True when embeddings exist but metadata not yet populated
-        self._embedding_count_hint: int = 0  # For informative "loading" messages
-        self._ever_loaded: bool = False  # Has the index ever successfully loaded data?
-
-    @property
-    def message_count(self) -> int:
-        return self._count
-
-    @property
-    def is_loading(self) -> bool:
-        return self._loading
-
-    @property
-    def embedding_count_hint(self) -> int:
-        return self._embedding_count_hint
-
-    def refresh_if_needed(self):
-        """Reload from sqlite if needed.
-
-        The 60-second throttle only applies after a successful first load.
-        If the index has never loaded data, allow refresh on every call
-        (so we pick up data as soon as the indexer populates the tables).
-        """
-        now = time.time()
-        if self._ever_loaded and now - self._last_refresh < _MIN_REFRESH_INTERVAL:
-            return
-        self._refresh()
-
-    def _refresh(self):
-        """Load all messages + embeddings from sqlite into numpy arrays."""
-        indexer = get_background_indexer()
-        cache = indexer.cache
-        if cache is None:
-            self._loading = True
-            return
-
-        # Load all messages with their text_hash
-        cursor = cache.conn.execute(
-            """SELECT uuid, session_id, workspace, timestamp, role, searchable_text,
-                      message_index, source, text_hash
-               FROM messages"""
-        )
-        rows = cursor.fetchall()
-
-        if not rows:
-            # Check if embeddings exist — if so, the indexer just hasn't
-            # stored message metadata yet (still loading)
-            emb_count = cache.embedding_count
-            if emb_count > 0:
-                self._loading = True
-                self._embedding_count_hint = emb_count
-            else:
-                self._loading = False
-                self._embedding_count_hint = 0
-
-            self._embeddings = None
-            self._metadata = []
-            self._count = 0
-            # Don't set _last_refresh or _ever_loaded — allow retry on next call
-            return
-
-        # Collect text hashes and load embeddings in batch
-        text_hashes = [row[8] for row in rows]
-        embeddings_dict = cache.get_embeddings_batch(text_hashes)
-
-        # Build parallel arrays (only for messages that have embeddings)
-        metadata = []
-        embedding_list = []
-
-        for row in rows:
-            uuid, session_id, ws, ts, role, text, msg_idx, src, text_hash = row
-            emb = embeddings_dict.get(text_hash)
-            if emb is None:
-                continue
-            metadata.append({
-                "uuid": uuid,
-                "session_id": session_id,
-                "workspace": ws,
-                "timestamp": ts,
-                "role": role,
-                "content": text[:2000] + "..." if len(text) > 2000 else text,
-                "message_index": msg_idx,
-                "source": src,
-            })
-            embedding_list.append(emb)
-
-        if embedding_list:
-            self._embeddings = np.vstack(embedding_list)
-            self._metadata = metadata
-            self._count = len(metadata)
-            self._loading = False
-            self._ever_loaded = True
-        else:
-            self._embeddings = None
-            self._metadata = []
-            self._count = 0
-
-        self._last_refresh = time.time()
-
-    def search(
-        self,
-        query_embedding: np.ndarray,
-        workspace: str | None = None,
-        source: str | None = None,
-        after_ts: float | None = None,
-        before_ts: float | None = None,
-        threshold: float = 0.2,
-        max_results: int = 100,
-    ) -> list[dict]:
-        """Fast vectorized search against the in-memory matrix."""
-        self.refresh_if_needed()
-
-        if self._embeddings is None or self._count == 0:
-            return []
-
-        # Compute all similarities at once
-        similarities = np.dot(self._embeddings, query_embedding)
-
-        # Build candidate mask for filtering
-        mask = similarities >= threshold
-
-        # Apply filters
-        if workspace or source or after_ts or before_ts:
-            for i in range(self._count):
-                if not mask[i]:
-                    continue
-                meta = self._metadata[i]
-                if workspace and not meta["workspace"].startswith(workspace):
-                    mask[i] = False
-                elif source and meta["source"] != source:
-                    mask[i] = False
-                elif after_ts and meta["timestamp"] < after_ts:
-                    mask[i] = False
-                elif before_ts and meta["timestamp"] >= before_ts:
-                    mask[i] = False
-
-        # Get top results
-        valid_indices = np.where(mask)[0]
-        if len(valid_indices) == 0:
-            return []
-
-        valid_scores = similarities[valid_indices]
-        top_order = np.argsort(valid_scores)[::-1][:max_results]
-
-        results = []
-        for idx in top_order:
-            global_idx = valid_indices[idx]
-            score = float(valid_scores[idx])
-            meta = self._metadata[global_idx]
-            results.append({**meta, "score": score})
-
-        return results
-
-
-# Global search index singleton (leader only)
-_search_index: SearchIndex | None = None
-
-
-def _get_search_index() -> SearchIndex:
-    """Get or create the in-memory search index."""
-    global _search_index
-    if _search_index is None:
-        _search_index = SearchIndex()
-    _search_index.refresh_if_needed()
-    return _search_index
+        get_search_index()
 
 
 def _get_current_workspace() -> str | None:
@@ -272,204 +61,6 @@ def _get_current_workspace() -> str | None:
     if val := os.environ.get("KIRO_WORKSPACE"):
         return val
     return os.environ.get("PWD") or str(Path.cwd())
-
-
-def _search(
-    query: str,
-    workspace: str | None,
-    source: Source | None,
-    after: str | None,
-    before: str | None,
-    context_size: int,
-    threshold: float,
-    max_results: int,
-    offset: int,
-) -> dict:
-    """Search implementation with leader/follower routing.
-
-    Leader: searches directly against SQLite cache.
-    Follower: forwards to leader via HTTP. On failure, attempts promotion.
-    """
-    _ensure_initialized()
-    manager = get_instance_manager()
-
-    if not manager.is_leader:
-        # Follower: forward to leader
-        follower = manager.follower_instance
-        if follower:
-            try:
-                return follower.search({
-                    "query": query,
-                    "workspace": workspace,
-                    "source": source.value if source else None,
-                    "after": after,
-                    "before": before,
-                    "context_size": context_size,
-                    "threshold": threshold,
-                    "max_results": max_results,
-                    "offset": offset,
-                })
-            except Exception:
-                # Leader unreachable — attempt promotion
-                if manager.promote_to_leader(_handle_search_request):
-                    # We're now leader, start indexer
-                    indexer = get_background_indexer()
-                    indexer.start()
-                    # Fall through to leader search below
-                else:
-                    return {
-                        "results": [],
-                        "query": query,
-                        "total_matches": 0,
-                        "error": "Leader unavailable and could not promote",
-                        "hint": "Try again in a moment.",
-                    }
-
-    # Leader path: search directly
-    local_response = _leader_search(query, workspace, source, after, before,
-                                    context_size, threshold, max_results, offset)
-
-    # Fan out to peers if configured
-    return _search_with_peers(
-        local_response, query, workspace, source, after, before,
-        context_size, threshold, max_results, offset,
-    )
-
-
-def _leader_search(
-    query: str,
-    workspace: str | None,
-    source: Source | None,
-    after: str | None,
-    before: str | None,
-    context_size: int,
-    threshold: float,
-    max_results: int,
-    offset: int,
-) -> dict:
-    """Direct search using in-memory numpy matrix (leader only)."""
-    indexer = get_background_indexer()
-    backend = indexer.backend
-
-    if backend is None:
-        try:
-            backend = get_embedding_backend()
-        except Exception as e:
-            return {
-                "results": [],
-                "query": query,
-                "total_matches": 0,
-                "error": f"Backend not ready: {e}",
-                "hint": "The embedding backend is still initializing. Try again in a moment.",
-            }
-
-    # Ensure in-memory index is loaded/refreshed
-    search_index = _get_search_index()
-    if search_index.message_count == 0:
-        if search_index.is_loading:
-            emb_hint = search_index.embedding_count_hint
-            return {
-                "results": [],
-                "query": query,
-                "total_matches": 0,
-                "hint": (
-                    f"The search index is still loading ({emb_hint} embeddings available "
-                    f"but metadata not yet populated). Try again in a few seconds."
-                ),
-            }
-        return {
-            "results": [],
-            "query": query,
-            "total_matches": 0,
-            "hint": "Index is empty. Indexing may still be in progress — try again shortly.",
-        }
-
-    # Parse date filters
-    after_dt = parse_date(after)
-    before_dt = parse_date(before)
-
-    # Embed the query
-    try:
-        query_embedding = backend.encode_query(query)
-    except Exception as e:
-        return {
-            "results": [],
-            "query": query,
-            "total_matches": 0,
-            "error": f"Failed to embed query: {e}",
-            "hint": "The embedding backend may be unavailable.",
-        }
-
-    # Fast vectorized search
-    scored_results = search_index.search(
-        query_embedding=query_embedding,
-        workspace=workspace,
-        source=source.value if source else None,
-        after_ts=after_dt.timestamp() if after_dt else None,
-        before_ts=before_dt.timestamp() if before_dt else None,
-        threshold=threshold,
-        max_results=(offset + max_results) * 3,  # Over-fetch for dedup
-    )
-
-    # Deduplicate overlapping context windows
-    scored_results = deduplicate_results(scored_results, context_size)
-
-    # Build response with context windows
-    cache = indexer.cache
-
-    def get_session_messages(session_id: str) -> list[dict]:
-        if cache is None:
-            return []
-        return cache.get_session_messages(session_id)
-
-    return format_search_response(
-        scored_results=scored_results,
-        query=query,
-        offset=offset,
-        max_results=max_results,
-        context_size=context_size,
-        get_session_messages=get_session_messages,
-    )
-
-
-def _search_with_peers(
-    local_response: dict,
-    query: str,
-    workspace: str | None,
-    source: Source | None,
-    after: str | None,
-    before: str | None,
-    context_size: int,
-    threshold: float,
-    max_results: int,
-    offset: int,
-) -> dict:
-    """Merge local results with peer results if peering is enabled."""
-    peer_request = {
-        "query": query,
-        "workspace": workspace,
-        "source": source.value if source else None,
-        "after": after,
-        "before": before,
-        "context_size": context_size,
-        "threshold": threshold,
-        "max_results": max_results,
-        "offset": offset,
-    }
-
-    peer_responses = fan_out_search(peer_request)
-    if peer_responses:
-        return merge_peer_results(local_response, peer_responses)
-    return local_response
-
-
-
-
-
-
-
-
-
 
 
 # --- MCP Tools ---
@@ -503,7 +94,8 @@ def search_project_history(
     Returns:
         Search results with matched messages, scores, context, and pagination info
     """
-    return _search(
+    _ensure_initialized()
+    return search(
         query=query,
         workspace=_get_current_workspace(),
         source=None,
@@ -548,13 +140,14 @@ def search_global_history(
     Returns:
         Search results with matched messages, scores, workspace, context, pagination
     """
+    _ensure_initialized()
     source_filter = None
     if source == "cli":
         source_filter = Source.CLI
     elif source == "ide":
         source_filter = Source.IDE
 
-    return _search(
+    return search(
         query=query,
         workspace=None,
         source=source_filter,
@@ -570,10 +163,11 @@ def search_global_history(
 @mcp.tool()
 def get_indexing_status() -> dict:
     """
-    Get the current status of the background indexer.
+    Get the current status of the background indexer and search readiness.
 
     Returns progress, rate, ETA, errors, and whether indexing is active.
-    Use this to check if the search index is up-to-date or still building.
+    Also reports whether the search index is loaded and ready for queries
+    (it can be ready from a prior cache while new indexing is in progress).
     """
     _ensure_initialized()
     manager = get_instance_manager()
@@ -587,7 +181,14 @@ def get_indexing_status() -> dict:
                 return {"error": "Leader unavailable", "state": "unknown"}
 
     indexer = get_background_indexer()
-    return indexer.status.to_dict()
+    status = indexer.status.to_dict()
+
+    # Add search readiness info from the in-memory index
+    search_index = get_search_index()
+    status["search_ready"] = search_index.message_count > 0
+    status["search_message_count"] = search_index.message_count
+
+    return status
 
 
 @mcp.tool()

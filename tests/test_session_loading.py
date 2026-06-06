@@ -481,7 +481,7 @@ class TestLoaderFacade:
     def test_list_all_sessions_combines_sources(self, tmp_path):
         """list_all_sessions combines CLI and IDE sources."""
         from kiro_ception.config import Config
-        from kiro_ception.loader import list_all_sessions
+        from kiro_ception.sessions import list_all_sessions
 
         ide_session = SessionInfo(
             session_id="ide-1", workspace="/project",
@@ -495,9 +495,9 @@ class TestLoaderFacade:
         )
 
         with (
-            patch("kiro_ception.loader.get_config", return_value=Config()),
-            patch("kiro_ception.loader.list_ide_sessions", return_value=[ide_session]),
-            patch("kiro_ception.loader.list_cli_sessions", return_value=[cli_session]),
+            patch("kiro_ception.sessions.get_config", return_value=Config()),
+            patch("kiro_ception.sessions.list_ide_sessions", return_value=[ide_session]),
+            patch("kiro_ception.sessions.list_cli_sessions", return_value=[cli_session]),
         ):
             sessions = list_all_sessions()
 
@@ -509,7 +509,7 @@ class TestLoaderFacade:
     def test_list_all_sessions_respects_enabled_flags(self, tmp_path):
         """Disabled sources are not queried."""
         from kiro_ception.config import CLISourceConfig, Config, IDESourceConfig
-        from kiro_ception.loader import list_all_sessions
+        from kiro_ception.sessions import list_all_sessions
 
         config = Config(
             cli=CLISourceConfig(enabled=False),
@@ -523,9 +523,9 @@ class TestLoaderFacade:
         )
 
         with (
-            patch("kiro_ception.loader.get_config", return_value=config),
-            patch("kiro_ception.loader.list_ide_sessions", return_value=[ide_session]),
-            patch("kiro_ception.loader.list_cli_sessions") as mock_cli,
+            patch("kiro_ception.sessions.get_config", return_value=config),
+            patch("kiro_ception.sessions.list_ide_sessions", return_value=[ide_session]),
+            patch("kiro_ception.sessions.list_cli_sessions") as mock_cli,
         ):
             sessions = list_all_sessions()
 
@@ -541,8 +541,8 @@ class TestGetMemoryLimit:
     def test_explicit_limit_mb(self):
         from kiro_ception.config import Config, MemoryConfig
         config = Config(memory=MemoryConfig(limit_mb=1024))
-        with patch("kiro_ception.indexer.get_config", return_value=config):
-            from kiro_ception.indexer import get_memory_limit
+        with patch("kiro_ception.memory.get_config", return_value=config):
+            from kiro_ception.memory import get_memory_limit
 
             limit = get_memory_limit()
 
@@ -552,8 +552,8 @@ class TestGetMemoryLimit:
         """Setting limit_mb = 0 disables the memory limit."""
         from kiro_ception.config import Config, MemoryConfig
         config = Config(memory=MemoryConfig(limit_mb=0))
-        with patch("kiro_ception.indexer.get_config", return_value=config):
-            from kiro_ception.indexer import get_memory_limit
+        with patch("kiro_ception.memory.get_config", return_value=config):
+            from kiro_ception.memory import get_memory_limit
 
             limit = get_memory_limit()
 
@@ -564,10 +564,10 @@ class TestGetMemoryLimit:
         from kiro_ception.config import Config, MemoryConfig
         config = Config(memory=MemoryConfig(fraction=0.5, limit_mb=None))
         with (
-            patch("kiro_ception.indexer.get_config", return_value=config),
-            patch("kiro_ception.indexer.get_physical_memory", return_value=16 * 1024 * 1024 * 1024),
+            patch("kiro_ception.memory.get_config", return_value=config),
+            patch("kiro_ception.memory.get_physical_memory", return_value=16 * 1024 * 1024 * 1024),
         ):
-            from kiro_ception.indexer import get_memory_limit
+            from kiro_ception.memory import get_memory_limit
 
             limit = get_memory_limit()
 

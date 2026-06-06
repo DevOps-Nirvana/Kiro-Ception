@@ -10,9 +10,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from kiro_ception.config import Config, PeersConfig
-from kiro_ception.peer_crypto import decrypt, derive_key, encrypt
 from kiro_ception.peers import (
+    decrypt,
     decrypt_request_body,
+    derive_key,
+    encrypt,
     encrypt_response_body,
     fan_out_search,
     merge_peer_results,
