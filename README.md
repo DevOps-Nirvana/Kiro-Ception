@@ -237,6 +237,7 @@ On first startup, the index eagerly loads from SQLite into RAM. If embeddings ex
 - Check `get_indexing_status` — indexing may still be in progress
 - Use `rescan()` to immediately pick up recent conversations
 - Verify your config with `get_config`
+- Check "Kiro Powers / MCP" log
 
 ### Embedding errors / timeouts
 
@@ -251,7 +252,7 @@ On first startup, the index eagerly loads from SQLite into RAM. If embeddings ex
 
 ### Multiple windows fighting
 
-The leader-follower pattern handles this automatically. Use `get_config` to see which process is leader. If a leader dies, the next request auto-promotes a follower.
+The leader-follower pattern handles this automatically. Use `get_config` to see which process is leader. If a leader dies, the next request attempts to auto-promote a follower.
 
 ### Nuclear option
 
@@ -274,6 +275,8 @@ uv run kiro-ception             # Run MCP server locally
 
 ## Data Locations
 
+For information about where your data is being kept, call the MCP tool "get_config".  On an unix-ey system, the file(s) at are...
+
 | Path | Contents |
 |------|----------|
 | `~/.config/kiro-ception/config.toml` | User configuration |
@@ -289,4 +292,19 @@ MIT - See: [LICENSE](LICENSE).
 
 ---
 
-*Originally inspired by the work of Danilo Poccia from [Kiro Total Recall](https://github.com/danilop/kiro-total-recall). Built to give Kiro the memory it deserves.*
+## Attribution
+
+Built upon [Kiro Total Recall](https://github.com/danilop/kiro-total-recall) by Danilo Poccia (MIT licensed). The session loaders, data models, CLI/IDE parsing, and core embed/search logic and code snippets originate from that project.
+
+Kiro Ception extends the original with:
+
+- **Non-blocking background indexing, so the tool works instantly with whatever is embedded**
+- **Automated regular updating of indexes in the background at a configurable interval**
+- **SQLite-backed persistent cache with WAL, for a fault-tolerant and incremental DB/embedding**
+- **Pluggable embedding backends, for higher quality GPU embeddings**
+- **Leader-follower process coordination for reduced resources across multiple open windows**
+- **Cross-machine search for users who work on multiple workstations**
+- **Up-to-date workspace-sessions and execution log support (Kiro changed their file format)**
+- **Runtime management tools (hot-reload, status, rescan)**
+- **Comprehensive test suite to prevent future breakage**
+- **And more... and more to come!**
