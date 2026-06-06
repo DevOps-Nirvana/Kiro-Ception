@@ -203,3 +203,12 @@ search_global_history(query="deployment issue", after="2026-06-03")
 - For cross-project or preference questions, use `search_global_history`
 - When the user mentions a specific project name, include it in the query
 - If the database is corrupt or search returns garbage, the user can reset with: `rm -rf ~/.cache/kiro-ception/` then restart Kiro
+
+## License and Support
+
+This power is licensed under the [MIT License](https://github.com/DevOps-Nirvana/Kiro-Ception/blob/main/LICENSE).
+
+**Privacy:** All data is processed and stored locally on your machine. No telemetry, no external API calls, and no data leaves your device — unless you explicitly configure a third-party embedding provider (e.g., OpenAI). The default configuration uses fully local, offline embeddings.
+
+- [Privacy & Data Locations](https://github.com/DevOps-Nirvana/Kiro-Ception#data-locations)
+- [Support & Issues](https://github.com/DevOps-Nirvana/Kiro-Ception/issues)
