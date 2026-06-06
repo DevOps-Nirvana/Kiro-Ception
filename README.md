@@ -10,16 +10,16 @@
   <a href="https://github.com/DevOps-Nirvana/Kiro-Ception/releases">Releases</a>
 </p>
 
-**Your AI now remembers everything you've ever done with it, across every machine you own.** Finally, an elephant-grade memory for your coding assistant — minus the 12,000-pound footprint.
+**Your AI now remembers everything you've ever done with it, across every machine you own.** Finally, an elephant-grade memory for your coding assistant, minus the 12,000-pound footprint.
 
-Kiro Ception gives Kiro a long-term memory — persistent recall that spans every session, every window, CLI and IDE, and even across multiple machines. Your agent remembers what you discussed yesterday, last month, or six months ago, in any project, on any computer you work from. It automatically indexes all conversation history in the background and provides instant hybrid search (semantic + keyword) so you can find past discussions, decisions, and implementations by meaning, keywords, date, or any combination.
+Kiro Ception gives Kiro a long-term memory, persistent recall that spans every session, every window, CLI and IDE, and even across multiple machines. Your agent remembers what you discussed yesterday, last month, or six months ago, in any project, on any computer you work from. It automatically indexes all conversation history in the background and provides instant hybrid search (semantic + keyword) so you can find past discussions, decisions, and implementations by meaning, keywords, date, or any combination.
 
 > *"We discussed this already..."*
 > *"What was that approach we used last week?"*
 > *"Didn't we solve this exact problem in the other project?"*
 > *"How did I usually set up CI pipelines?"*
 >
-> — All things you can now just *ask*, and actually get an answer.
+> - All things you can now just *ask*, and actually get an answer.
 
 ## How It Works
 
@@ -30,32 +30,32 @@ Kiro Ception is an [MCP Power](https://kiro.dev/docs/powers/) that runs as a bac
 3. **Embeds** each message into a vector representation using your configured model
 4. **Indexes** everything into an in-memory numpy matrix for instant hybrid search (semantic + FTS5 keyword)
 5. **Serves** search results via MCP tools that Kiro can call naturally during conversation
-6. **Federates** across machines — search your laptop and desktop simultaneously with encrypted peer-to-peer queries
+6. **Federates** across machines, search your laptop and desktop simultaneously with encrypted peer-to-peer queries
 
-Sessions are processed **newest first**, so your most recent conversations are searchable within seconds of startup — even while older history is still being indexed in the background.
+Sessions are processed **newest first**, so your most recent conversations are searchable within seconds of startup, even while older history is still being indexed in the background.
 
-Search results include surrounding context (messages before/after each match), relevance scores, workspace origin, and pagination — so Kiro gets the full picture of what was discussed.
+Search results include surrounding context (messages before/after each match), relevance scores, workspace origin, and pagination, so Kiro gets the full picture of what was discussed.
 
 ### Architecture Highlights
 
 - **Non-blocking**: Heavy work (indexing, embedding) runs in background daemon threads. The MCP server responds instantly.
 - **Hybrid search**: Combines semantic vector similarity (70%) with FTS5 full-text keyword search (30%). Find things by meaning *and* exact names.
-- **Recency-aware**: Recent conversations rank higher automatically. The decay curve scales with your history depth — no manual tuning.
+- **Recency-aware**: Recent conversations rank higher automatically. The decay curve scales with your history depth, no manual tuning.
 - **Multi-window efficient**: Leader-follower pattern means multiple Kiro windows share one index in RAM. No duplication, no conflicts.
 - **Multi-machine**: Optional peer federation searches across all your computers simultaneously with AES-256-GCM encrypted transport.
 - **Crash-safe**: SQLite with WAL mode. Lose at most one in-flight message on Ctrl+C/crash/quit.
 - **Instant cold-start**: Loads from existing cache in under 1 second. No waiting for re-indexing after restarts.
-- **Auto-migrating**: Schema upgrades run automatically on startup — updates never require deleting your cache, future-proofing this tool.
-- **Observable**: Built-in status dashboard, indexing progress monitoring, hot-reloadable config, and health diagnostics — all accessible to the agent or via browser.
+- **Auto-migrating**: Schema upgrades run automatically on startup, updates never require deleting your cache, future-proofing this tool.
+- **Observable**: Built-in status dashboard, indexing progress monitoring, hot-reloadable config, and health diagnostics, all accessible to the agent or via browser.
 
 ## Installation
 
 ### Prerequisites
 
-- **[Kiro](https://kiro.dev/downloads/)** — the AI-powered IDE
-- **[Git](https://git-scm.com/downloads)** — for cloning/updating the power
+- **[Kiro](https://kiro.dev/downloads/)** - the AI-powered IDE
+- **[Git](https://git-scm.com/downloads)** - for cloning/updating the power
 - **Python 3.11+** (3.12, 3.13 also supported and tested officially)
-- **[uv](https://docs.astral.sh/uv/getting-started/installation/)** — fast Python package manager
+- **[uv](https://docs.astral.sh/uv/getting-started/installation/)** - fast Python package manager
 
 ### Install as a Kiro Power (Recommended)
 
@@ -79,7 +79,7 @@ Then register it as a power: Powers panel → **Add power from Local Path** → 
 
 If you installed from source or prefer manual configuration, add to your Kiro MCP configuration (`~/.kiro/settings/mcp.json`):
 
-> **Warning:** Installing as a Power (above) is strongly recommended. The POWER.md file contains keyword triggers and usage guidance that help Kiro automatically activate search when you reference past conversations. With MCP-only setup, you'll need to explicitly ask Kiro to search history — it won't trigger on its own from phrases like "as we discussed" or "what did we do last time".
+> **Warning:** Installing as a Power (above) is strongly recommended. The POWER.md file contains keyword triggers and usage guidance that help Kiro automatically activate search when you reference past conversations. With MCP-only setup, you'll need to explicitly ask Kiro to search history, it won't trigger on its own from phrases like "as we discussed" or "what did we do last time".
 
 ```json
 {
@@ -92,7 +92,7 @@ If you installed from source or prefer manual configuration, add to your Kiro MC
 }
 ```
 
-This uses `uv tool run` to fetch and run the package directly from GitHub — no local clone needed.
+This uses `uv tool run` to fetch and run the package directly from GitHub, no local clone needed.
 
 Alternatively, if you've cloned the repo locally:
 
@@ -112,7 +112,7 @@ Replace `/path/to/Kiro-Ception` with the actual clone location. Usually just sav
 
 Create `~/.config/kiro-ception/config.toml` to customize behavior. If this file doesn't exist, sensible defaults are used (local CPU-based embeddings with `all-MiniLM-L6-v2`).  Query the tool `get_config` for full information on your file location(s) for your config and database.
 
-A full annotated default config is in [`config.default.toml`](config.default.toml) — copy it as a starting point:
+A full annotated default config is in [`config.default.toml`](config.default.toml); copy it as a starting point:
 
 ```bash
 mkdir -p ~/.config/kiro-ception
@@ -128,7 +128,7 @@ With no config file at all, Kiro Ception uses:
 - **Sources**: Auto-discovers Kiro CLI and IDE conversations in both old and new formats
 - **Memory**: Uses up to 1/3 of available RAM for the index (by default)
 
-This is a good starting point — it runs entirely on CPU with no external dependencies.
+This is a good starting point; it runs entirely on CPU with no external dependencies.
 
 ### GPU-Accelerated with Ollama (Recommended for Power Users)
 
@@ -231,7 +231,7 @@ secret = "my-shared-passphrase"  # Optional: encrypts all peer traffic with AES-
 timeout_seconds = 5
 ```
 
-Peers communicate over HTTP. If `secret` is set, payloads are encrypted with AES-256-GCM (key derived via Argon2id from the passphrase). Both machines must use the same secret. Without a secret, traffic is plaintext — fine on VPNs or Tailscale or when local-only at your own house (up to you).
+Peers communicate over HTTP. If `secret` is set, payloads are encrypted with AES-256-GCM (key derived via Argon2id from the passphrase). Both machines must use the same secret. Without a secret, traffic is plaintext; fine on VPNs or Tailscale or when local-only at your own house (up to you).
 
 ### Memory Limits
 
@@ -281,7 +281,7 @@ On first startup, the index eagerly loads from SQLite into RAM. If embeddings ex
 
 ### Empty search results
 
-- Check `get_indexing_status` — indexing may still be in progress
+- Check `get_indexing_status`; indexing may still be in progress
 - Use `rescan()` to immediately pick up recent conversations
 - Verify your config with `get_config`
 - Check "Kiro Powers / MCP" log
@@ -289,7 +289,7 @@ On first startup, the index eagerly loads from SQLite into RAM. If embeddings ex
 ### Embedding errors / timeouts
 
 - For Ollama: ensure it's running (`ollama ps`) and the model is pulled
-- Very long messages (>50K chars) may timeout — they're skipped with a warning
+- Very long messages (>50K chars) may timeout; they're skipped with a warning
 - Check your "Kiro Powers" outputs for logs/errors
 
 ### Config changes not taking effect
@@ -333,7 +333,7 @@ For information about where your data is being kept, call the MCP tool "get_conf
 
 The cache DB filename includes a hash of the backend configuration. Changing model/backend/dimensions creates a new DB file (old ones are preserved for rollback).
 
-**Privacy:** All data is processed and stored locally on your machine. No telemetry, no external API calls, and no data leaves your device — unless you explicitly configure a third-party embedding provider (e.g., OpenAI). The default configuration uses fully local, offline embeddings.
+**Privacy:** All data is processed and stored locally on your machine. No telemetry, no external API calls, and no data leaves your device; unless you explicitly configure a third-party embedding provider (e.g., OpenAI). The default configuration uses fully local, offline embeddings.
 
 ## Support
 
@@ -345,4 +345,4 @@ MIT - See: [LICENSE](LICENSE).
 
 ## Attribution
 
-Built by [Farley Farley](https://github.com/AndrewFarley) ([DevOps-Nirvana](https://github.com/DevOps-Nirvana)), based upon [Kiro Total Recall](https://github.com/danilop/kiro-total-recall) by Danilo Poccia (MIT licensed). The original session loaders, data models, and core embed/search concept originate from that project. Kiro Ception is a ground-up rewrite for production use — see the Architecture Highlights above for what's different.
+Built by [Farley Farley](https://github.com/AndrewFarley) ([DevOps-Nirvana](https://github.com/DevOps-Nirvana)), based upon [Kiro Total Recall](https://github.com/danilop/kiro-total-recall) by Danilo Poccia (MIT licensed). The original session loaders, data models, and core embed/search concept originate from that project. Kiro Ception is a ground-up rewrite for production use; see the Architecture Highlights above for what's different.
