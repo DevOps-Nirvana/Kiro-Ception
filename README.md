@@ -51,7 +51,7 @@ cd Kiro-Ception
 uv sync
 ```
 
-That's it. All dependencies are resolved and installed into `.venv/`.
+Then register it as a power: Powers panel → **Add power from Local Path** → select the `Kiro-Ception` folder you just cloned.
 
 ### Manual MCP Setup (Alternative)
 
