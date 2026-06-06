@@ -24,6 +24,118 @@ logger = logging.getLogger(__name__)
 _LOCK_FILE_NAME = "leader.lock"
 _LEADER_INFO_NAME = "leader.json"
 
+# Simple HTML dashboard served at GET /
+_DASHBOARD_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kiro Ception</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+         background: #1a1a2e; color: #e0e0e0; padding: 2rem; line-height: 1.5; }
+  h1 { color: #64ffda; margin-bottom: 0.5rem; }
+  h2 { color: #80cbc4; margin: 1.5rem 0 0.5rem; font-size: 1.1rem; }
+  .subtitle { color: #888; margin-bottom: 2rem; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+  @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
+  .card { background: #16213e; border-radius: 8px; padding: 1.2rem; }
+  .card h2 { margin-top: 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  td { padding: 0.3rem 0.5rem; border-bottom: 1px solid #1a1a2e; }
+  td:first-child { color: #80cbc4; white-space: nowrap; width: 40%; }
+  .status-badge { display: inline-block; padding: 2px 8px; border-radius: 4px;
+                  font-size: 0.8rem; font-weight: 600; }
+  .status-idle { background: #2e7d32; color: #c8e6c9; }
+  .status-indexing { background: #e65100; color: #ffe0b2; }
+  .status-starting { background: #1565c0; color: #bbdefb; }
+  .status-error { background: #b71c1c; color: #ffcdd2; }
+  .loading { color: #888; font-style: italic; }
+  #error { color: #ef5350; margin: 1rem 0; }
+  .refresh { color: #64ffda; cursor: pointer; font-size: 0.85rem; float: right; }
+  .refresh:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<h1>Kiro Ception</h1>
+<p class="subtitle">Status Dashboard</p>
+<div id="error"></div>
+<div class="grid">
+  <div class="card">
+    <span class="refresh" onclick="load()">refresh</span>
+    <h2>Indexing Status</h2>
+    <div id="status"><p class="loading">Loading...</p></div>
+  </div>
+  <div class="card">
+    <h2>Configuration</h2>
+    <div id="config"><p class="loading">Loading...</p></div>
+  </div>
+</div>
+<script>
+function esc(s) { return String(s).replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function badge(state) {
+  const cls = state === 'idle' ? 'status-idle' : state === 'indexing' ? 'status-indexing'
+    : state === 'starting' ? 'status-starting' : 'status-error';
+  return `<span class="status-badge ${cls}">${esc(state)}</span>`;
+}
+function row(k, v) { return `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`; }
+function renderStatus(d) {
+  let h = '<table>';
+  h += `<tr><td>State</td><td>${badge(d.state)}</td></tr>`;
+  h += row('Progress', d.progress_percent + '%');
+  h += row('Sessions (total)', d.sessions_total);
+  h += row('Sessions (processed)', d.sessions_processed);
+  h += row('Sessions (unchanged)', d.sessions_unchanged);
+  h += row('Messages embedded', d.messages_embedded);
+  h += row('Messages cached', d.messages_cached);
+  h += row('Errors', d.errors);
+  h += row('Rate', d.rate_msg_per_sec + ' msg/s');
+  h += row('Elapsed', Math.round(d.elapsed_seconds) + 's');
+  h += row('Embedding count', d.embedding_count);
+  h += row('Search ready', d.search_ready ? 'Yes' : 'No');
+  h += row('Search messages', d.search_message_count);
+  if (d.last_error) h += row('Last error', d.last_error);
+  if (d.last_completed_at) h += row('Last completed', d.last_completed_at);
+  h += '</table>';
+  document.getElementById('status').innerHTML = h;
+}
+function renderConfig(d) {
+  let h = '<table>';
+  h += row('Role', d.instance?.role || '?');
+  h += row('PID', d.instance?.pid || '?');
+  h += row('Port', d.instance?.port || d.server?.leader_port || '?');
+  h += row('Backend', d.embedding?.backend || '?');
+  h += row('Model', d.embedding?.model || '?');
+  h += row('Dimensions', d.embedding?.dimensions || 'auto');
+  h += row('Embeddings', d.cache?.embedding_count || 0);
+  h += row('Messages', d.cache?.message_count || 0);
+  h += row('Sessions indexed', d.cache?.indexed_sessions || 0);
+  h += row('Memory limit', d.memory?.effective_limit_mb + ' MB' || '?');
+  h += row('Rescan interval', d.indexing?.rescan_interval_minutes + ' min');
+  h += row('Peers enabled', d.peers?.enabled ? 'Yes' : 'No');
+  if (d.peers?.enabled) h += row('Peer nodes', d.peers.nodes?.join(', ') || 'none');
+  h += '</table>';
+  document.getElementById('config').innerHTML = h;
+}
+async function load() {
+  try {
+    const [statusRes, configRes] = await Promise.all([
+      fetch('/status'), fetch('/config')
+    ]);
+    renderStatus(await statusRes.json());
+    renderConfig(await configRes.json());
+    document.getElementById('error').textContent = '';
+  } catch(e) {
+    document.getElementById('error').textContent = 'Failed to load: ' + e.message;
+  }
+}
+load();
+setInterval(load, 10000);
+</script>
+</body>
+</html>"""
+
 
 def _get_lock_path() -> Path:
     """Get the leader lock file path."""
@@ -207,7 +319,10 @@ class LeaderInstance:
 
             def do_GET(self):
                 try:
-                    if self.path == "/status":
+                    if self.path == "/":
+                        self._send_dashboard()
+
+                    elif self.path == "/status":
                         from .background_indexer import get_background_indexer
                         indexer = get_background_indexer()
                         self._send_json(indexer.status.to_dict())
@@ -232,6 +347,14 @@ class LeaderInstance:
 
                 except Exception as e:
                     self._send_json({"error": str(e)}, 500)
+
+            def _send_dashboard(self):
+                """Serve a simple status dashboard HTML page."""
+                html = _DASHBOARD_HTML
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(html.encode("utf-8"))
 
         try:
             self._http_server = HTTPServer(("127.0.0.1", self._port), RequestHandler)
