@@ -61,14 +61,14 @@ If you installed from source or prefer manual configuration, add to your Kiro MC
 {
   "mcpServers": {
     "kiro-ception": {
-      "command": "uvx",
-      "args": ["--from", "git+https://github.com/DevOps-Nirvana/Kiro-Ception", "kiro-ception"]
+      "command": "uv",
+      "args": ["tool", "run", "--from", "git+https://github.com/DevOps-Nirvana/Kiro-Ception", "kiro-ception"]
     }
   }
 }
 ```
 
-This uses `uvx` to fetch and run the package directly from GitHub — no local clone needed.
+This uses `uv tool run` to fetch and run the package directly from GitHub — no local clone needed.
 
 Alternatively, if you've cloned the repo locally:
 
