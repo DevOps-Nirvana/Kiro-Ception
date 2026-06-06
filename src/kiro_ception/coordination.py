@@ -491,7 +491,8 @@ class FollowerInstance:
 class InstanceManager:
     """Manages the lifecycle of this process as either leader or follower.
 
-    Handles initial role assignment and automatic failover.
+    Handles initial role assignment, automatic failover, and periodic
+    heartbeat checks for leader liveness.
     """
 
     def __init__(self):
@@ -499,6 +500,8 @@ class InstanceManager:
         self._follower: FollowerInstance | None = None
         self._role: str = "undecided"  # "leader" | "follower" | "undecided"
         self._lock = threading.Lock()
+        self._search_handler = None  # Stored for use during promotion
+        self._heartbeat_thread: threading.Thread | None = None
 
     @property
     def role(self) -> str:
@@ -525,6 +528,7 @@ class InstanceManager:
         Returns:
             "leader" or "follower"
         """
+        self._search_handler = search_handler
         with self._lock:
             leader = LeaderInstance()
             if leader.try_acquire_leadership():
@@ -597,6 +601,46 @@ class InstanceManager:
                 info["leader_port"] = leader_info.get("port")
                 info["leader_pid"] = leader_info.get("pid")
         return info
+
+    def start_heartbeat(self):
+        """Start the background heartbeat thread.
+
+        - Leader: periodically updates leader.json with a fresh timestamp.
+        - Follower: periodically checks if the leader is alive. If dead,
+          attempts promotion to leader.
+        """
+        if self._heartbeat_thread and self._heartbeat_thread.is_alive():
+            return
+        self._heartbeat_thread = threading.Thread(
+            target=self._heartbeat_loop, daemon=True, name="heartbeat"
+        )
+        self._heartbeat_thread.start()
+
+    def _heartbeat_loop(self):
+        """Periodic heartbeat: leader writes timestamp, follower checks liveness."""
+        config = get_config()
+        interval = config.server.heartbeat_interval_seconds
+
+        while True:
+            time.sleep(interval)
+            try:
+                if self.is_leader:
+                    # Leader: refresh the timestamp in leader.json
+                    if self._leader:
+                        _write_leader_info(self._leader.port, os.getpid())
+                else:
+                    # Follower: check if leader is still alive
+                    if self._follower and not self._follower.is_leader_alive():
+                        logger.info("Heartbeat: leader appears dead, attempting promotion")
+                        if self.promote_to_leader(self._search_handler):
+                            # Successfully promoted — start the indexer
+                            from .background_indexer import get_background_indexer
+                            indexer = get_background_indexer()
+                            indexer.start()
+                            from .search import get_search_index
+                            get_search_index()
+            except Exception as e:
+                logger.debug(f"Heartbeat error: {e}")
 
 
 # Global singleton

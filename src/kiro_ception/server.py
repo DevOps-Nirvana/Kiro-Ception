@@ -21,15 +21,16 @@ from .search import SearchIndex, get_search_index, handle_search_request, leader
 mcp = FastMCP("kiro-ception")
 
 # --- Initialization ---
-# Deferred: role assignment happens on first tool call to avoid
-# blocking MCP server startup. The _ensure_initialized() function
-# handles leader/follower setup.
 
 _initialized = False
 
 
-def _ensure_initialized():
-    """Initialize instance manager on first use (deferred from startup)."""
+def _initialize():
+    """Initialize instance manager: elect leader, start indexer, load search index.
+
+    By default this runs eagerly at startup (in main()). If server.deferred_init
+    is True in config, this is deferred to the first tool call instead.
+    """
     global _initialized
     if _initialized:
         return
@@ -45,6 +46,19 @@ def _ensure_initialized():
         # Eagerly load the search index from existing cache so the first
         # search doesn't hit an empty matrix (if prior data exists in SQLite)
         get_search_index()
+
+    # Start heartbeat thread (leader writes heartbeat, follower checks liveness)
+    manager.start_heartbeat()
+
+
+def _ensure_initialized():
+    """Ensure initialization has run (called at the top of each tool).
+
+    With eager init (default), this is a no-op. With deferred_init=True,
+    this triggers initialization on first tool call.
+    """
+    if not _initialized:
+        _initialize()
 
 
 def _get_current_workspace() -> str | None:
@@ -480,6 +494,9 @@ if _startup_config.peers.enabled and _startup_config.peers.debug_tool_enabled:
 
 def main():
     """Run the MCP server."""
+    config = _get_config()
+    if not config.server.deferred_init:
+        _initialize()
     mcp.run()
 
 

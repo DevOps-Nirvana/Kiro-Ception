@@ -133,6 +133,8 @@ class ServerConfig:
     """Server/inter-process communication configuration."""
 
     leader_port: int = 19742  # Localhost-only HTTP port for leader
+    deferred_init: bool = False  # If True, delay leader election until first tool call
+    heartbeat_interval_seconds: int = 30  # How often to check leader liveness
 
 
 @dataclass

@@ -83,6 +83,15 @@ rescan_interval_minutes = 10
 # This and the leader-follower pattern is needed to prevent each process from having its own in-memory cache wasting resources
 leader_port = 19742
 
+# If true, delay leader election until the first tool call (legacy behavior).
+# Default (false) initializes eagerly at startup so the HTTP dashboard and
+# indexer are available immediately.
+# deferred_init = true
+
+# How often (in seconds) to check leader liveness. Followers use this to
+# detect a dead leader and self-promote. Leader uses it to refresh its heartbeat.
+heartbeat_interval_seconds = 30
+
 [peers]
 # Cross-machine peer federation (disabled by default)
 # When enabled, search queries are fanned out to remote kiro-ception instances
