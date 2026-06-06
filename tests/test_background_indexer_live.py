@@ -562,3 +562,83 @@ class TestBackgroundIndexerLive:
         # Should have switched to a new database
         assert indexer.cache.db_path != first_db
         assert indexer.cache.embedding_count == 3  # Re-embedded into new DB
+
+    def test_completed_at_set_after_each_pass(self, tmp_path, monkeypatch, mock_backend, fake_sessions, fake_messages):
+        """Regression: completed_at and last_completed_at must be set after each index pass.
+
+        Previously, these were only set in the finally block which only fires when
+        the thread exits. During normal operation (rescan loop running), they were
+        never set — so get_indexing_status always showed null for both fields.
+        """
+        monkeypatch.setattr(
+            "kiro_ception.cache._get_cache_db_path",
+            lambda fp: tmp_path / f"cache_{fp}.db",
+        )
+
+        config = Config(
+            embedding=EmbeddingConfig(backend="openai-compatible", api_base="http://fake", batch_size=2),
+            indexing=IndexingConfig(rescan_interval_minutes=60),  # Long interval — won't auto-fire
+        )
+
+        def _load_messages(session):
+            return fake_messages.get(session.session_id, [])
+
+        with (
+            patch("kiro_ception.background_indexer.get_config", return_value=config),
+            patch("kiro_ception.background_indexer.get_embedding_backend", return_value=mock_backend),
+            patch("kiro_ception.background_indexer.list_all_sessions", return_value=fake_sessions),
+            patch("kiro_ception.background_indexer.load_session_messages", side_effect=_load_messages),
+            patch("kiro_ception.background_indexer.get_memory_limit", return_value=0),
+            patch("kiro_ception.background_indexer.select_sessions_within_limit",
+                  return_value=(fake_sessions, [])),
+        ):
+            indexer = BackgroundIndexer()
+            indexer.start()
+
+            # Wait for initial pass to complete (state goes to IDLE)
+            deadline = time.time() + 10
+            while time.time() < deadline:
+                if indexer.status.state == IndexerState.IDLE:
+                    break
+                time.sleep(0.05)
+
+            # KEY ASSERTION: After the initial pass, while the thread is still
+            # alive (waiting in the rescan loop), completed_at and last_completed_at
+            # must be set — NOT null.
+            assert indexer._thread.is_alive(), "Thread should still be alive (rescan loop)"
+            assert indexer.status.completed_at is not None, (
+                "completed_at must be set after initial pass completes"
+            )
+            assert indexer.status.last_completed_at is not None, (
+                "last_completed_at must be set after initial pass completes"
+            )
+            initial_completed = indexer.status.last_completed_at
+
+            # Also verify it was persisted to SQLite
+            stored = indexer.cache.get_meta("last_completed_at")
+            assert stored is not None, "last_completed_at must be persisted to SQLite"
+            assert float(stored) == initial_completed
+
+            # Now trigger a rescan and verify completed_at updates again
+            time.sleep(0.1)  # Small gap so timestamps differ
+            indexer.trigger_rescan()
+
+            # Wait for the rescan pass to complete
+            deadline = time.time() + 10
+            while time.time() < deadline:
+                if (indexer.status.state == IndexerState.IDLE
+                        and indexer.status.last_completed_at > initial_completed):
+                    break
+                time.sleep(0.05)
+
+            # After the rescan pass, values should be updated
+            assert indexer.status.completed_at is not None
+            assert indexer.status.last_completed_at > initial_completed, (
+                "last_completed_at must be updated after rescan pass"
+            )
+
+            # Verify SQLite was updated too
+            stored2 = indexer.cache.get_meta("last_completed_at")
+            assert float(stored2) == indexer.status.last_completed_at
+
+            indexer.stop()
