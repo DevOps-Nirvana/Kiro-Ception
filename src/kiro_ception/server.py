@@ -390,6 +390,94 @@ def reload_config() -> dict:
     }
 
 
+# --- Conditional tools (registered at import time based on config) ---
+
+_startup_config = _get_config()
+if _startup_config.peers.enabled and _startup_config.peers.debug_tool_enabled:
+
+    @mcp.tool()
+    def search_peer_history(
+        query: str,
+        after: str | None = None,
+        before: str | None = None,
+        context_size: int = 3,
+        threshold: float = 0.2,
+        max_results: int = 10,
+        offset: int = 0,
+        source: str = "all",
+    ) -> dict:
+        """
+        Search conversation history on REMOTE PEERS ONLY (excludes local results).
+
+        Debug/advanced tool for querying peer machines directly. Only available
+        when peers are enabled and peers.debug_tool_enabled = true in config.
+
+        Args:
+            query: Keywords or sentence describing what to find
+            after: Filter to messages on/after this date (ISO 8601)
+            before: Filter to messages before this date (ISO 8601)
+            context_size: Messages to include before AND after each match (default: 3)
+            threshold: Minimum similarity 0-1 (default: 0.2)
+            max_results: Maximum results to return (default: 10)
+            offset: Skip results for pagination (default: 0)
+            source: Filter by source — "all" (default), "cli", or "ide"
+
+        Returns:
+            Search results from peer machines only (local index is not searched)
+        """
+        _ensure_initialized()
+
+        from .peers import fan_out_search
+
+        source_filter = None
+        if source == "cli":
+            source_filter = Source.CLI
+        elif source == "ide":
+            source_filter = Source.IDE
+
+        peer_request = {
+            "query": query,
+            "workspace": None,
+            "source": source_filter.value if source_filter else None,
+            "after": after,
+            "before": before,
+            "context_size": context_size,
+            "threshold": threshold,
+            "max_results": max_results,
+            "offset": offset,
+        }
+
+        peer_responses = fan_out_search(peer_request)
+        if not peer_responses:
+            return {
+                "results": [],
+                "query": query,
+                "total_matches": 0,
+                "hint": "No peer responses received. Check peer connectivity with get_config.",
+            }
+
+        # Merge all peer responses
+        all_results = []
+        for resp in peer_responses:
+            all_results.extend(resp.get("results", []))
+
+        # Sort by score descending and paginate
+        all_results.sort(key=lambda r: r.get("score", 0), reverse=True)
+        total = len(all_results)
+        paginated = all_results[offset:offset + max_results]
+        has_more = offset + len(paginated) < total
+
+        return {
+            "results": paginated,
+            "query": query,
+            "total_matches": total,
+            "offset": offset,
+            "has_more": has_more,
+            "peers_responded": len(peer_responses),
+            "hint": f"Showing {offset + 1}-{offset + len(paginated)} of {total} from {len(peer_responses)} peer(s)." if paginated else "No matches from peers.",
+        }
+
+
 def main():
     """Run the MCP server."""
     mcp.run()

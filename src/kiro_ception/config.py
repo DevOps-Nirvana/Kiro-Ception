@@ -143,6 +143,7 @@ class PeersConfig:
     nodes: list[str] = field(default_factory=list)  # ["host:port", ...]
     secret: str = ""  # Shared passphrase for encryption (empty = unencrypted)
     timeout_seconds: int = 5  # Per-peer request timeout
+    debug_tool_enabled: bool = False  # Show search_peer_history tool (requires peers enabled + restart)
 
 
 @dataclass
@@ -247,6 +248,7 @@ def diff_configs(old: Config, new: Config) -> list[dict]:
         ("peers.nodes", old.peers.nodes, new.peers.nodes),
         ("peers.secret", "***" if old.peers.secret else "", "***" if new.peers.secret else ""),
         ("peers.timeout_seconds", old.peers.timeout_seconds, new.peers.timeout_seconds),
+        ("peers.debug_tool_enabled", old.peers.debug_tool_enabled, new.peers.debug_tool_enabled),
     ]
 
     for key, old_val, new_val in reindex_keys:

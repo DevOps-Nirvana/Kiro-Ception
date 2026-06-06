@@ -103,3 +103,8 @@ secret = ""
 # Per-peer request timeout in seconds
 # If a peer doesn't respond within this time, its results are skipped
 timeout_seconds = 5
+
+# Enable the search_peer_history debug tool (default: false)
+# When true (and peers are enabled), exposes an extra MCP tool that searches
+# only remote peers without including local results. Requires Kiro restart.
+# debug_tool_enabled = true
