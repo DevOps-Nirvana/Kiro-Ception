@@ -30,6 +30,12 @@ First-time indexing speed depends on your embedding backend and corpus size.
 CPU-based sentence-transformers is fast but produces lower-quality embeddings.
 GPU-based models (e.g., Ollama) are slower to embed but yield better search results.
 
+## Search Behavior
+
+- **Hybrid scoring**: Results are scored 70% semantic similarity + 30% FTS5 BM25 keyword match. This means exact function names and identifiers surface even when the embedding model misses them.
+- **Recency boost**: Recent messages get a slight score advantage via exponential decay. The halflife auto-scales based on your history depth. Configurable via `search.recency_floor` (default: 0.85 = oldest messages get 85% of their raw score). Set to 1.0 to disable.
+- **Context windows**: Each result includes surrounding messages (configurable via `context_size`, default 3 before + 3 after the match).
+
 ## Cache Location
 
 All persistent data lives in `~/.cache/kiro-ception/`:

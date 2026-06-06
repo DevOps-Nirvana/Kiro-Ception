@@ -4,18 +4,23 @@
   <img src="docs/images/header.png" alt="Kiro Ception" width="800" />
 </p>
 
-**Your AI finally remembers what you said last Tuesday — on any machine you said it from.**
+**Your AI now remembers everything you've ever done with it, across every machine you own.** Finally, an elephant-grade memory for your coding assistant — minus the 12,000-pound footprint.
 
-Kiro Ception gives Kiro total recall — persistent memory that spans every session, every window, CLI and IDE, and even across multiple machines. Your agent remembers what you discussed yesterday, last month, or six months ago, in any project, on any computer you work from. It automatically indexes all conversation history in the background and provides instant hybrid search (semantic + keyword) so you can find past discussions, decisions, and implementations by meaning, keywords, date, or any combination.
+Kiro Ception gives Kiro a long-term memory — persistent recall that spans every session, every window, CLI and IDE, and even across multiple machines. Your agent remembers what you discussed yesterday, last month, or six months ago, in any project, on any computer you work from. It automatically indexes all conversation history in the background and provides instant hybrid search (semantic + keyword) so you can find past discussions, decisions, and implementations by meaning, keywords, date, or any combination.
 
-> *"We discussed this already..."* — You, talking to Kiro, which has now actually indexed that conversation.
+> *"We discussed this already..."*
+> *"What was that approach we used last week?"*
+> *"Didn't we solve this exact problem in the other project?"*
+> *"How did I usually set up CI pipelines?"*
+>
+> — All things you can now just *ask*, and actually get an answer.
 
 ## How It Works
 
 Kiro Ception is an [MCP Power](https://kiro.dev/docs/powers/) that runs as a background service alongside your Kiro IDE. It:
 
 1. **Discovers** all Kiro CLI and IDE session files on your machine
-2. **Extracts** meaningful messages (filtering out system prompts, boilerplate, and code blocks)
+2. **Extracts** meaningful messages (filtering out system prompts and boilerplate, condensing long code blocks into `[code:lang]` placeholders)
 3. **Embeds** each message into a vector representation using your configured model
 4. **Indexes** everything into an in-memory numpy matrix for instant hybrid search (semantic + FTS5 keyword)
 5. **Serves** search results via MCP tools that Kiro can call naturally during conversation
@@ -34,13 +39,15 @@ Search results include surrounding context (messages before/after each match), r
 - **Multi-machine**: Optional peer federation searches across all your computers simultaneously with AES-256-GCM encrypted transport.
 - **Crash-safe**: SQLite with WAL mode. Lose at most one in-flight message on Ctrl+C/crash/quit.
 - **Instant cold-start**: Loads from existing cache in under 1 second. No waiting for re-indexing after restarts.
-- **Auto-migrating**: Schema upgrades run automatically on startup — updates never require deleting your cache.
+- **Auto-migrating**: Schema upgrades run automatically on startup — updates never require deleting your cache, future-proofing this tool.
 - **Observable**: Built-in status dashboard, indexing progress monitoring, hot-reloadable config, and health diagnostics — all accessible to the agent or via browser.
 
 ## Installation
 
 ### Prerequisites
 
+- **[Kiro](https://kiro.dev/downloads/)** — the AI-powered IDE
+- **[Git](https://git-scm.com/downloads)** — for cloning/updating the power
 - **Python 3.11+** (3.12, 3.13 also supported and tested officially)
 - **[uv](https://docs.astral.sh/uv/getting-started/installation/)** — fast Python package manager
 
@@ -65,6 +72,8 @@ Then register it as a power: Powers panel → **Add power from Local Path** → 
 ### Manual MCP Setup (Alternative)
 
 If you installed from source or prefer manual configuration, add to your Kiro MCP configuration (`~/.kiro/settings/mcp.json`):
+
+> **Warning:** Installing as a Power (above) is strongly recommended. The POWER.md file contains keyword triggers and usage guidance that help Kiro automatically activate search when you reference past conversations. With MCP-only setup, you'll need to explicitly ask Kiro to search history — it won't trigger on its own from phrases like "as we discussed" or "what did we do last time".
 
 ```json
 {
@@ -91,11 +100,11 @@ Alternatively, if you've cloned the repo locally:
 }
 ```
 
-Replace `/path/to/Kiro-Ception` with the actual clone location. Restart Kiro to pick it up.
+Replace `/path/to/Kiro-Ception` with the actual clone location. Usually just saving your mcp will do it, but if needed, restart Kiro.
 
 ## Configuration
 
-Create `~/.config/kiro-ception/config.toml` to customize behavior. If this file doesn't exist, sensible defaults are used (local CPU-based embeddings with `all-MiniLM-L6-v2`).
+Create `~/.config/kiro-ception/config.toml` to customize behavior. If this file doesn't exist, sensible defaults are used (local CPU-based embeddings with `all-MiniLM-L6-v2`).  Query the tool `get_config` for full information on your file location(s) for your config and database.
 
 A full annotated default config is in [`config.default.toml`](config.default.toml) — copy it as a starting point:
 
@@ -318,6 +327,8 @@ For information about where your data is being kept, call the MCP tool "get_conf
 
 The cache DB filename includes a hash of the backend configuration. Changing model/backend/dimensions creates a new DB file (old ones are preserved for rollback).
 
+**Privacy:** All data is processed and stored locally on your machine. No telemetry, no external API calls, and no data leaves your device — unless you explicitly configure a third-party embedding provider (e.g., OpenAI). The default configuration uses fully local, offline embeddings.
+
 ## License
 
 MIT - See: [LICENSE](LICENSE).
@@ -326,17 +337,4 @@ MIT - See: [LICENSE](LICENSE).
 
 ## Attribution
 
-Built upon [Kiro Total Recall](https://github.com/danilop/kiro-total-recall) by Danilo Poccia (MIT licensed). The session loaders, data models, CLI/IDE parsing, and core embed/search logic and code snippets originate from that project.
-
-Kiro Ception extends the original with making this a more production-ready and scalable tool including:
-
-- **Non-blocking background indexing** the tool works instantly with whatever is currently embedded
-- **Automated regular updates** of indexes in the background at a configurable interval
-- **SQLite-backed persistent cache** for a fault-tolerant and incremental DB/embedding experience
-- **Pluggable embedding backends** for higher quality GPU embeddings
-- **Leader-follower process coordination** for reduced resources across multiple open windows
-- **Cross-machine search** for users who work on multiple workstations
-- **Up-to-date workspace/log/sessions format parsing** because Kiro changed their format
-- **Runtime management tools (hot-reload, status, rescan)** to make this tool usable, flexible and inspectable
-- **Comprehensive test suite** to prevent future breakage
-- **And more...** and more to come!
+Built upon [Kiro Total Recall](https://github.com/danilop/kiro-total-recall) by Danilo Poccia (MIT licensed). The original session loaders, data models, and core embed/search concept originate from that project. Kiro Ception is a ground-up rewrite for production use — see the Architecture Highlights above for what's different.

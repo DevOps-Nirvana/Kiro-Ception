@@ -38,7 +38,7 @@ This is a Kiro MCP Power (kiro-ception) that provides semantic search across con
 1. Session discovery: stat files, compare mtimes against session_state table
 2. Message extraction: parse JSON, filter boilerplate, replace code blocks with placeholders
 3. Embedding: hash text → check cache → call backend if not cached → store in sqlite
-4. Search: numpy dot product against in-memory matrix → filter by workspace/source/date → deduplicate → build context windows → paginate
+4. Search: numpy dot product against in-memory matrix → FTS5 full-text keyword search → merge hybrid results (70% vector / 30% BM25) → apply recency boost → filter by workspace/source/date → deduplicate → build context windows → paginate
 
 ### Search Path (Read)
 

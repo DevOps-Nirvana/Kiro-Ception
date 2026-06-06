@@ -590,7 +590,7 @@ wheels = [
 
 [[package]]
 name = "kiro-ception"
-version = "1.0.1"
+version = "1.0.2"
 source = { editable = "." }
 dependencies = [
     { name = "argon2-cffi" },
