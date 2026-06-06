@@ -44,11 +44,31 @@
 After modifying code:
 ```bash
 uv sync                              # Rebuild package in venv
-uv run pytest tests/ -q              # Run test suite (300 tests, ~34s)
+uv run pytest tests/ -q              # Run test suite (300+ tests)
 uv run kiro-ception                  # Test MCP server starts (Ctrl+C to exit)
 ```
 
-To test with the installed Power, reinstall it from the Kiro Powers panel (or restart Kiro to reload the MCP server).
+### Local Power Installation (Dev Mode)
+
+The `mcp.json` at the repo root is what Kiro uses when the power is installed.
+In production it points to the GitHub repo via `uv tool run`. For local
+development, temporarily change it to point at your local `.venv`:
+
+```json
+{
+  "mcpServers": {
+    "kiro-ception": {
+      "command": "/path/to/kiro-ception/.venv/bin/kiro-ception"
+    }
+  }
+}
+```
+
+Then reinstall the power from local path (Powers panel → Add power from Local Path →
+select the repo folder). This way Kiro runs your local code directly and picks
+up changes immediately after `uv sync` + reinstall.
+
+**Do not commit this local path change.** Revert `mcp.json` before pushing.
 
 ## Testing
 
