@@ -337,4 +337,4 @@ MIT - See: [LICENSE](LICENSE).
 
 ## Attribution
 
-Built upon [Kiro Total Recall](https://github.com/danilop/kiro-total-recall) by Danilo Poccia (MIT licensed). The original session loaders, data models, and core embed/search concept originate from that project. Kiro Ception is a ground-up rewrite for production use — see the Architecture Highlights above for what's different.
+Built by [Farley Farley](https://github.com/AndrewFarley) ([DevOps-Nirvana](https://github.com/DevOps-Nirvana)), based upon [Kiro Total Recall](https://github.com/danilop/kiro-total-recall) by Danilo Poccia (MIT licensed). The original session loaders, data models, and core embed/search concept originate from that project. Kiro Ception is a ground-up rewrite for production use — see the Architecture Highlights above for what's different.
