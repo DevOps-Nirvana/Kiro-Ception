@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "kiro-ception": {
-      "command": "uvx",
-      "args": ["--from", "git+https://github.com/DevOps-Nirvana/Kiro-Ception", "kiro-ception"]
+      "command": "uv",
+      "args": ["tool", "run", "--from", "git+https://github.com/DevOps-Nirvana/Kiro-Ception", "kiro-ception"]
     }
   }
 }
