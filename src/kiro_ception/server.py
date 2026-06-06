@@ -202,6 +202,18 @@ def get_indexing_status() -> dict:
     status["search_ready"] = search_index.message_count > 0
     status["search_message_count"] = search_index.message_count
 
+    # Add database size on disk
+    if indexer.cache:
+        try:
+            from pathlib import Path
+            db_path = Path(indexer.cache.db_path) if not isinstance(indexer.cache.db_path, Path) else indexer.cache.db_path
+            db_size = db_path.stat().st_size if db_path.exists() else 0
+            status["db_size_mb"] = round(db_size / (1024 * 1024), 2)
+        except (OSError, TypeError):
+            status["db_size_mb"] = None
+    else:
+        status["db_size_mb"] = None
+
     return status
 
 
