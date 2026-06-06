@@ -207,6 +207,17 @@ class BackgroundIndexer:
             # Run initial indexing
             self._index_pass(config)
 
+            # Mark initial pass as completed
+            self._status.completed_at = time.time()
+            self._status.last_completed_at = self._status.completed_at
+            self._status.state = IndexerState.IDLE
+            self._status.embedding_count = self._cache.embedding_count if self._cache else 0
+            # Persist to SQLite so it survives restarts
+            if self._cache:
+                self._cache.set_meta(
+                    "last_completed_at", str(self._status.last_completed_at)
+                )
+
             # Periodic rescan loop
             rescan_interval = config.indexing.rescan_interval_minutes * 60
             while not self._stop_event.is_set() and rescan_interval > 0:
@@ -277,6 +288,17 @@ class BackgroundIndexer:
 
                 # Run rescan
                 self._index_pass(config)
+
+                # Mark this pass as completed
+                self._status.completed_at = time.time()
+                self._status.last_completed_at = self._status.completed_at
+                self._status.state = IndexerState.IDLE
+                self._status.embedding_count = self._cache.embedding_count if self._cache else 0
+                # Persist to SQLite so it survives restarts
+                if self._cache:
+                    self._cache.set_meta(
+                        "last_completed_at", str(self._status.last_completed_at)
+                    )
 
         except Exception as e:
             self._status.state = IndexerState.ERROR
