@@ -58,6 +58,17 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
   #error { color: #ef5350; margin: 1rem 0; }
   .refresh { color: #64ffda; cursor: pointer; font-size: 0.85rem; float: right; }
   .refresh:hover { text-decoration: underline; }
+  .countdown-ring { display: inline-block; vertical-align: middle; margin-left: 0.5rem; }
+  .countdown-ring svg { width: 18px; height: 18px; transform: rotate(-90deg); }
+  .countdown-ring circle { fill: none; stroke: #64ffda; stroke-width: 2.5;
+    stroke-dasharray: 44; stroke-dashoffset: 0;
+    transition: none; }
+  .countdown-ring.active circle {
+    animation: countdown 10s linear forwards; }
+  @keyframes countdown {
+    from { stroke-dashoffset: 0; }
+    to { stroke-dashoffset: 44; }
+  }
 </style>
 </head>
 <body>
@@ -66,7 +77,7 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
 <div id="error"></div>
 <div class="grid">
   <div class="card">
-    <span class="refresh" onclick="load()">refresh</span>
+    <span class="refresh" onclick="load()">refresh<span class="countdown-ring" id="ring"><svg viewBox="0 0 18 18"><circle cx="9" cy="9" r="7"/></svg></span></span>
     <h2>Indexing Status</h2>
     <div id="status"><p class="loading">Loading...</p></div>
   </div>
@@ -140,6 +151,11 @@ async function load() {
   } catch(e) {
     document.getElementById('error').textContent = 'Failed to load: ' + e.message;
   }
+  // Restart countdown animation
+  const ring = document.getElementById('ring');
+  ring.classList.remove('active');
+  void ring.offsetWidth; // Force reflow to restart animation
+  ring.classList.add('active');
 }
 load();
 setInterval(load, 10000);
