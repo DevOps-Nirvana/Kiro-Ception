@@ -92,7 +92,11 @@ function renderStatus(d) {
   h += row('Errors', d.errors);
   h += row('Rate', d.rate_msg_per_sec + ' msg/s');
   h += row('Elapsed', Math.round(d.elapsed_seconds) + 's');
+  h += row('Uptime', Math.round(d.uptime_seconds) + 's');
   h += row('Embedding count', d.embedding_count);
+  h += row('DB size', (d.db_size_mb || 0) + ' MB');
+  h += row('Schema version', d.schema_version || '?');
+  h += row('FTS enabled', d.fts_enabled ? 'Yes' : 'No');
   h += row('Search ready', d.search_ready ? 'Yes' : 'No');
   h += row('Search messages', d.search_message_count);
   if (d.last_error) h += row('Last error', d.last_error);
@@ -102,6 +106,9 @@ function renderStatus(d) {
 }
 function renderConfig(d) {
   let h = '<table>';
+  h += row('Version', d.version?.kiro_ception || '?');
+  h += row('Python', d.version?.python || '?');
+  h += row('Platform', d.version?.platform || '?');
   h += row('Role', d.instance?.role || '?');
   h += row('PID', d.instance?.pid || '?');
   h += row('Port', d.instance?.port || d.server?.leader_port || '?');
@@ -113,6 +120,7 @@ function renderConfig(d) {
   h += row('Sessions indexed', d.cache?.indexed_sessions || 0);
   h += row('Memory limit', d.memory?.effective_limit_mb + ' MB' || '?');
   h += row('Rescan interval', d.indexing?.rescan_interval_minutes + ' min');
+  h += row('Heartbeat interval', (d.server?.heartbeat_interval_seconds || 30) + 's');
   h += row('Peers enabled', d.peers?.enabled ? 'Yes' : 'No');
   if (d.peers?.enabled) h += row('Peer nodes', d.peers.nodes?.join(', ') || 'none');
   h += '</table>';
