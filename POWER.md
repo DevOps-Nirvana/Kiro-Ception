@@ -9,7 +9,7 @@ author: "Farley Farley via DevOps-Nirvana (originally by Danilo Poccia)"
 
 # Kiro Ception
 
-Search past Kiro conversation history using semantic + FTS5 hybrid search. Works with both Kiro CLI and Kiro IDE conversations. Indexes conversations in the background and provides instant semantic search results.
+Total recall for Kiro — persistent memory that spans every session, every window, CLI and IDE, and even across multiple machines. Automatically indexes all conversation history in the background and provides instant hybrid search (semantic + keyword) so the agent can find past discussions by meaning, keywords, date, or any combination.
 
 ## Important: Background Indexing
 

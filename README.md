@@ -1,8 +1,8 @@
 # Kiro Ception
 
-**Your AI finally remembers what you said last Tuesday.**
+**Your AI finally remembers what you said last Tuesday — on any machine you said it from.**
 
-Kiro Ception gives your Kiro IDE a long-term memory — semantic search across *all* your past conversations, across every project, every session, CLI and IDE alike. It's like `Ctrl+F` for your brain, except it actually understands what you meant, not just what you typed.
+Kiro Ception gives Kiro total recall — persistent memory that spans every session, every window, CLI and IDE, and even across multiple machines. Your agent remembers what you discussed yesterday, last month, or six months ago, in any project, on any computer you work from. It automatically indexes all conversation history in the background and provides instant hybrid search (semantic + keyword) so you can find past discussions, decisions, and implementations by meaning, keywords, date, or any combination.
 
 > *"We discussed this already..."* — You, talking to Kiro, which has now actually indexed that conversation.
 
@@ -13,8 +13,9 @@ Kiro Ception is an [MCP Power](https://kiro.dev/docs/powers/) that runs as a bac
 1. **Discovers** all Kiro CLI and IDE session files on your machine
 2. **Extracts** meaningful messages (filtering out system prompts, boilerplate, and code blocks)
 3. **Embeds** each message into a vector representation using your configured model
-4. **Indexes** everything into an in-memory numpy matrix for instant cosine similarity search
+4. **Indexes** everything into an in-memory numpy matrix for instant hybrid search (semantic + FTS5 keyword)
 5. **Serves** search results via MCP tools that Kiro can call naturally during conversation
+6. **Federates** across machines — search your laptop and desktop simultaneously with encrypted peer-to-peer queries
 
 Sessions are processed **newest first**, so your most recent conversations are searchable within seconds of startup — even while older history is still being indexed in the background.
 
@@ -23,12 +24,14 @@ Search results include surrounding context (messages before/after each match), r
 ### Architecture Highlights
 
 - **Non-blocking**: Heavy work (indexing, embedding) runs in background daemon threads. The MCP server responds instantly.
-- **Hybrid search**: Combines semantic vector similarity (70%) with FTS5 full-text keyword search (30%). Exact function names and keywords surface alongside meaning-based matches.
-- **Leader-follower**: Multiple Kiro windows share one index in RAM. The first process becomes the leader; others proxy via localhost HTTP, reduces overhead when having multiple windows open.
-- **Incremental**: File mtime tracking skips unchanged sessions. Text hash deduplication avoids re-embedding identical content.
-- **Crash-safe**: Database is SQLite with WAL mode. Lose at most one in-flight message on Ctrl+C/crash/Kiro quit.
-- **Eager cold-start**: On startup, loads the index from existing SQLite cache in under 1 second (if you've run before).
-- **Auto-migrating**: Schema migrations run automatically on startup — updates never require deleting your cache.
+- **Hybrid search**: Combines semantic vector similarity (70%) with FTS5 full-text keyword search (30%). Find things by meaning *and* exact names.
+- **Recency-aware**: Recent conversations rank higher automatically. The decay curve scales with your history depth — no manual tuning.
+- **Multi-window efficient**: Leader-follower pattern means multiple Kiro windows share one index in RAM. No duplication, no conflicts.
+- **Multi-machine**: Optional peer federation searches across all your computers simultaneously with AES-256-GCM encrypted transport.
+- **Crash-safe**: SQLite with WAL mode. Lose at most one in-flight message on Ctrl+C/crash/quit.
+- **Instant cold-start**: Loads from existing cache in under 1 second. No waiting for re-indexing after restarts.
+- **Auto-migrating**: Schema upgrades run automatically on startup — updates never require deleting your cache.
+- **Observable**: Built-in status dashboard, indexing progress monitoring, hot-reloadable config, and health diagnostics — all accessible to the agent or via browser.
 
 ## Installation
 
