@@ -20,6 +20,9 @@ from .config import get_config, expand_path
 
 logger = logging.getLogger(__name__)
 
+# Track process start time for uptime reporting
+_process_start_time = time.time()
+
 # Lock file location
 _LOCK_FILE_NAME = "leader.lock"
 _LEADER_INFO_NAME = "leader.json"
@@ -332,8 +335,34 @@ class LeaderInstance:
 
                     elif self.path == "/status":
                         from .background_indexer import get_background_indexer
+                        from .search import get_search_index
+                        from .migrations import get_schema_version
                         indexer = get_background_indexer()
-                        self._send_json(indexer.status.to_dict())
+                        status = indexer.status.to_dict()
+                        # Add fields that the MCP tool also adds
+                        search_index = get_search_index()
+                        status["search_ready"] = search_index.message_count > 0
+                        status["search_message_count"] = search_index.message_count
+                        if indexer.cache:
+                            try:
+                                db_path = indexer.cache.db_path
+                                from pathlib import Path
+                                db_path = Path(db_path) if not isinstance(db_path, Path) else db_path
+                                status["db_size_mb"] = round(db_path.stat().st_size / (1024 * 1024), 2) if db_path.exists() else 0
+                            except (OSError, TypeError):
+                                status["db_size_mb"] = None
+                            status["schema_version"] = get_schema_version(indexer.cache.conn)
+                            try:
+                                indexer.cache.conn.execute("SELECT 1 FROM messages_fts LIMIT 0")
+                                status["fts_enabled"] = True
+                            except Exception:
+                                status["fts_enabled"] = False
+                        else:
+                            status["db_size_mb"] = None
+                            status["schema_version"] = None
+                            status["fts_enabled"] = False
+                        status["uptime_seconds"] = round(time.time() - _process_start_time, 1)
+                        self._send_json(status)
 
                     elif self.path == "/config":
                         # Import here to avoid circular
