@@ -2,8 +2,9 @@
 
 ## Embedding Backend
 
-This project uses Ollama with `qwen3-embedding:4b` at 1024 dimensions.
-The user's config is at `~/.config/kiro-ception/config.toml`:
+The default backend is `sentence-transformers` with `all-MiniLM-L6-v2` (384 dimensions, CPU-only, no external dependencies). For higher-quality results, users can configure an OpenAI-compatible backend (e.g., Ollama with a GPU model).
+
+Example Ollama configuration (`~/.config/kiro-ception/config.toml`):
 
 ```toml
 [embedding]
@@ -14,18 +15,20 @@ dimensions = 1024
 batch_size = 1
 ```
 
-Ollama must be running locally for embedding to work. If embedding fails,
-check that Ollama is up and the model is pulled (`ollama pull qwen3-embedding:4b`).
+When using Ollama, it must be running locally. If embedding fails,
+check that Ollama is up and the model is pulled (`ollama pull <model>`).
 
 ## Performance Characteristics
 
-- **First startup** after fresh install: ~35 minutes to index 4300+ sessions
 - **Subsequent startups**: <2 seconds (all sessions tracked via mtime)
 - **Search latency**: <10ms (numpy dot product against in-memory matrix)
 - **Matrix refresh**: every 60 seconds (picks up newly embedded messages)
 - **Cold-start**: Eager load from existing SQLite cache on leader init (<1s if prior data exists)
 - **Periodic rescan**: every 10 minutes (checks for new/changed session files)
-- **Embedding rate**: ~3-5 messages/second with qwen3-embedding:4b
+
+First-time indexing speed depends on your embedding backend and corpus size.
+CPU-based sentence-transformers is fast but produces lower-quality embeddings.
+GPU-based models (e.g., Ollama) are slower to embed but yield better search results.
 
 ## Cache Location
 
@@ -42,7 +45,7 @@ All persistent data lives in `~/.cache/kiro-ception/`:
 - The 60-second refresh throttle does NOT apply until the first successful load
 
 ### Embedding errors / timeouts
-- Check Ollama is running: `ollama ps`
+- For Ollama: check it's running (`ollama ps`) and the model is pulled
 - Very long messages (>50K chars) may timeout — they're processed individually with fallback
 - Context overflow errors are logged and the message is skipped
 
@@ -85,4 +88,4 @@ If something is fundamentally broken (corrupt database, wrong dimensions cached)
 ```bash
 rm -rf ~/.cache/kiro-ception/
 ```
-Then restart Kiro — it will rebuild everything from scratch (~35 minutes for initial embed).
+Then restart Kiro — it will rebuild everything from scratch.
