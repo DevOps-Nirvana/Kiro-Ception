@@ -4,7 +4,7 @@ version: "1.0.0"
 displayName: "Kiro Ception"
 description: "Semantic search across Kiro CLI and IDE conversation history - find past discussions by meaning, not just keywords"
 keywords: ["history", "recall", "remember", "remind", "remind me", "past conversation", "previous chat", "what did we discuss", "how did we", "like we discussed", "as I mentioned", "what did we", "what were those", "we implemented", "we built", "we did", "we added", "we changed", "we fixed", "we decided", "previously", "last time", "earlier", "before", "that thing we", "what was that", "what approach", "how did I", "where did we leave off", "yesterday", "last week", "recently", "I don't remember", "I forget", "didn't we already", "same as we did", "why did we choose", "what was the reasoning", "what was the solution"]
-author: "Farley Farley (originally by Danilo Poccia)"
+author: "Farley Farley via DevOps-Nirvana (originally by Danilo Poccia)"
 ---
 
 # Kiro Ception

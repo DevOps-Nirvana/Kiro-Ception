@@ -12,9 +12,6 @@ wheels/
 # Cache
 .cache/
 
-# Lock files
-uv.lock
-
 # IDE
 .idea/
 .vscode/

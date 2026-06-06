@@ -1,7 +1,8 @@
 {
   "mcpServers": {
     "kiro-ception": {
-      "command": "/Users/farley/ml-learnings/kiro-ception/.venv/bin/kiro-ception"
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/DevOps-Nirvana/Kiro-Ception", "kiro-ception"]
     }
   }
 }

@@ -35,31 +35,54 @@ Search results include surrounding context (messages before/after each match), r
 - **Python 3.11+** (3.12, 3.13 also supported and tested officially)
 - **[uv](https://docs.astral.sh/uv/getting-started/installation/)** — fast Python package manager
 
+### Install as a Kiro Power (Recommended)
+
+1. In Kiro IDE: Powers panel → **Add power from GitHub**
+2. Enter: `https://github.com/DevOps-Nirvana/Kiro-Ception`
+3. Click Install — the power activates automatically when you mention "recall", "remember", or "past conversation"
+
+The power registers itself and "Check for updates" in the Powers panel will pull the latest version whenever you want.
+
 ### Install from Source
 
 ```bash
-git clone https://github.com/farleyfarley/kiro-ception.git
-cd kiro-ception
+git clone https://github.com/DevOps-Nirvana/Kiro-Ception.git
+cd Kiro-Ception
 uv sync
 ```
 
 That's it. All dependencies are resolved and installed into `.venv/`.
 
-### Register as a Kiro Power
+### Manual MCP Setup (Alternative)
 
-Add to your Kiro MCP configuration (`~/.kiro/settings/mcp.json`):
+If you installed from source or prefer manual configuration, add to your Kiro MCP configuration (`~/.kiro/settings/mcp.json`):
 
 ```json
 {
   "mcpServers": {
     "kiro-ception": {
-      "command": "/path/to/kiro-ception/.venv/bin/kiro-ception"
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/DevOps-Nirvana/Kiro-Ception", "kiro-ception"]
     }
   }
 }
 ```
 
-Replace `/path/to/kiro-ception` with the actual clone location. Restart Kiro to pick it up.
+This uses `uvx` to fetch and run the package directly from GitHub — no local clone needed.
+
+Alternatively, if you've cloned the repo locally:
+
+```json
+{
+  "mcpServers": {
+    "kiro-ception": {
+      "command": "/path/to/Kiro-Ception/.venv/bin/kiro-ception"
+    }
+  }
+}
+```
+
+Replace `/path/to/Kiro-Ception` with the actual clone location. Restart Kiro to pick it up.
 
 ## Configuration
 
@@ -296,15 +319,15 @@ MIT - See: [LICENSE](LICENSE).
 
 Built upon [Kiro Total Recall](https://github.com/danilop/kiro-total-recall) by Danilo Poccia (MIT licensed). The session loaders, data models, CLI/IDE parsing, and core embed/search logic and code snippets originate from that project.
 
-Kiro Ception extends the original with:
+Kiro Ception extends the original with making this a more production-ready and scalable tool including:
 
-- **Non-blocking background indexing, so the tool works instantly with whatever is embedded**
-- **Automated regular updating of indexes in the background at a configurable interval**
-- **SQLite-backed persistent cache with WAL, for a fault-tolerant and incremental DB/embedding**
-- **Pluggable embedding backends, for higher quality GPU embeddings**
-- **Leader-follower process coordination for reduced resources across multiple open windows**
-- **Cross-machine search for users who work on multiple workstations**
-- **Up-to-date workspace-sessions and execution log support (Kiro changed their file format)**
-- **Runtime management tools (hot-reload, status, rescan)**
-- **Comprehensive test suite to prevent future breakage**
-- **And more... and more to come!**
+- **Non-blocking background indexing** the tool works instantly with whatever is currently embedded
+- **Automated regular updates** of indexes in the background at a configurable interval
+- **SQLite-backed persistent cache** for a fault-tolerant and incremental DB/embedding experience
+- **Pluggable embedding backends** for higher quality GPU embeddings
+- **Leader-follower process coordination** for reduced resources across multiple open windows
+- **Cross-machine search** for users who work on multiple workstations
+- **Up-to-date workspace/log/sessions format parsing** because Kiro changed their format
+- **Runtime management tools (hot-reload, status, rescan)** to make this tool usable, flexible and inspectable
+- **Comprehensive test suite** to prevent future breakage
+- **And more...** and more to come!

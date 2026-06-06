@@ -27,8 +27,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/farleyfarley/kiro-ception"
-Repository = "https://github.com/farleyfarley/kiro-ception"
+Homepage = "https://github.com/DevOps-Nirvana/Kiro-Ception"
+Repository = "https://github.com/DevOps-Nirvana/Kiro-Ception"
 
 [project.scripts]
 kiro-ception = "kiro_ception.server:main"
