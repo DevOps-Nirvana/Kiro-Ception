@@ -172,17 +172,39 @@ The cache DB is namespaced by backend fingerprint:
 Changing model/backend/dimensions = different hash = different DB file.
 Old cache files are preserved for rollback.
 
+## Schema Migrations
+
+Schema versioning lives in `migrations.py`. The current version is tracked in
+the `meta` table under the key `schema_version`.
+
+**Version history:**
+- v1: Baseline (embeddings, messages, session_state, execution_index, meta)
+- v2: FTS5 full-text search index on messages.searchable_text + sync triggers
+
+**Adding a new migration:**
+1. Bump `CURRENT_SCHEMA_VERSION` in `migrations.py`
+2. Add a `_migrate_vN_to_vN+1(conn)` function with the schema changes
+3. Add the `if current < N+1:` call in `run_migrations()`
+4. If the migration adds a table/index that needs data, populate it from existing rows
+5. Add tests in `tests/test_migrations.py`
+6. Update this version history
+
+Migrations run automatically on cache init. They are idempotent (safe to call
+multiple times). Existing data is never deleted — migrations only add tables,
+columns, or indexes.
+
 ## Project Structure
 
 ```
 src/kiro_ception/
 ├── server.py              # MCP tools + initialization (deferred startup)
-├── search.py              # SearchIndex (in-memory numpy) + search routing (leader/follower/peers)
+├── search.py              # SearchIndex (in-memory numpy) + hybrid search routing (leader/follower/peers)
 ├── background_indexer.py  # Background thread (write path)
 ├── search_utils.py        # Pure search post-processing functions (testable)
 ├── peers.py               # Cross-machine federation (fan-out, merge, Argon2id + AES-256-GCM encryption)
 ├── coordination.py        # Leader-follower coordination (file locks, HTTP server, failover)
-├── cache.py               # SQLite-backed storage
+├── cache.py               # SQLite-backed storage + FTS5 full-text search
+├── migrations.py          # Schema versioning and sequential migrations
 ├── config.py              # TOML config loading
 ├── embeddings.py          # Embedding backend abstraction
 ├── ide_loader.py          # IDE conversation loader

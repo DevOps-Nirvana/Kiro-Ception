@@ -4,11 +4,13 @@ Contains the SearchIndex class (vectorized cosine similarity search),
 leader search logic, and peer federation integration.
 """
 
+import math
 import time
 
 import numpy as np
 
 from .background_indexer import get_background_indexer
+from .config import get_config
 from .coordination import get_instance_manager
 from .embeddings import get_embedding_backend
 from .models import Source
@@ -39,6 +41,7 @@ class SearchIndex:
         self._loading: bool = False  # True when embeddings exist but metadata not yet populated
         self._embedding_count_hint: int = 0  # For informative "loading" messages
         self._ever_loaded: bool = False  # Has the index ever successfully loaded data?
+        self._oldest_timestamp: float = 0  # Oldest message timestamp (for recency boost calc)
 
     @property
     def message_count(self) -> int:
@@ -51,6 +54,10 @@ class SearchIndex:
     @property
     def embedding_count_hint(self) -> int:
         return self._embedding_count_hint
+
+    @property
+    def oldest_timestamp(self) -> float:
+        return self._oldest_timestamp
 
     def refresh_if_needed(self):
         """Reload from sqlite if needed.
@@ -138,6 +145,8 @@ class SearchIndex:
             self._count = len(metadata)
             self._loading = False
             self._ever_loaded = True
+            # Track oldest timestamp for recency boost calculation
+            self._oldest_timestamp = min(m["timestamp"] for m in metadata) if metadata else 0
         else:
             self._embeddings = None
             self._metadata = []
@@ -379,11 +388,26 @@ def leader_search(
         max_results=(offset + max_results) * 3,  # Over-fetch for dedup
     )
 
+    # Hybrid search: also run FTS5 full-text search and merge results
+    cache = indexer.cache
+    if cache is not None:
+        fts_results = cache.fts_search(
+            query=query,
+            workspace=workspace,
+            source=source.value if source else None,
+            after_ts=after_dt.timestamp() if after_dt else None,
+            before_ts=before_dt.timestamp() if before_dt else None,
+            limit=(offset + max_results) * 3,
+        )
+        scored_results = _merge_hybrid_results(scored_results, fts_results)
+
+    # Apply recency boost: recent messages get a slight score advantage
+    scored_results = _apply_recency_boost(scored_results, search_index.oldest_timestamp)
+
     # Deduplicate overlapping context windows
     scored_results = deduplicate_results(scored_results, context_size)
 
     # Build response with context windows
-    cache = indexer.cache
 
     def get_session_messages(session_id: str) -> list[dict]:
         if cache is None:
@@ -429,3 +453,122 @@ def _search_with_peers(
     if peer_responses:
         return merge_peer_results(local_response, peer_responses)
     return local_response
+
+
+# --- Hybrid search merging ---
+
+# Weight allocation for hybrid scoring
+_VECTOR_WEIGHT = 0.7  # Semantic similarity contributes 70%
+_FTS_WEIGHT = 0.3     # Full-text BM25 contributes 30%
+
+
+def _merge_hybrid_results(
+    vector_results: list[dict],
+    fts_results: list[dict],
+) -> list[dict]:
+    """Merge vector similarity results with FTS5 full-text results.
+
+    Strategy:
+    - Results found by both methods get a combined score (weighted sum)
+    - Results found only by vector search keep their semantic score × vector_weight
+    - Results found only by FTS get their FTS score × fts_weight
+    - Final list is sorted by combined score descending
+
+    This ensures exact keyword matches boost results that are also semantically
+    relevant, while pure semantic matches still surface when keywords don't match.
+    """
+    if not fts_results:
+        return vector_results
+
+    # Build lookup by UUID for FTS results
+    fts_by_uuid: dict[str, dict] = {}
+    for r in fts_results:
+        fts_by_uuid[r["uuid"]] = r
+
+    # Build lookup by UUID for vector results
+    vector_by_uuid: dict[str, dict] = {}
+    for r in vector_results:
+        vector_by_uuid[r["uuid"]] = r
+
+    # Merge: start with all vector results, boost those also found by FTS
+    merged: dict[str, dict] = {}
+
+    for uuid, vr in vector_by_uuid.items():
+        fts_match = fts_by_uuid.get(uuid)
+        if fts_match:
+            # Found by both — combine scores
+            combined_score = (vr["score"] * _VECTOR_WEIGHT) + (fts_match["score"] * _FTS_WEIGHT)
+            merged[uuid] = {**vr, "score": combined_score}
+        else:
+            # Vector-only result
+            merged[uuid] = {**vr, "score": vr["score"] * _VECTOR_WEIGHT}
+
+    # Add FTS-only results (not found by vector search)
+    for uuid, fr in fts_by_uuid.items():
+        if uuid not in merged:
+            merged[uuid] = {**fr, "score": fr["score"] * _FTS_WEIGHT}
+
+    # Sort by combined score descending
+    results = sorted(merged.values(), key=lambda r: r["score"], reverse=True)
+    return results
+
+
+# --- Recency boost ---
+
+
+def _compute_halflife(oldest_timestamp: float, floor: float) -> float:
+    """Compute the halflife (in seconds) so that a message at oldest_timestamp
+    gets exactly the floor multiplier.
+
+    Derived from: floor = exp(-0.693 * max_age / halflife)
+    Solving:      halflife = -0.693 * max_age / ln(floor)
+
+    Returns 0 if recency boost is not applicable (no valid history span).
+    """
+    if oldest_timestamp <= 0 or floor >= 1.0 or floor <= 0:
+        return 0  # No recency boost possible
+    now = time.time()
+    max_age = now - oldest_timestamp
+    if max_age <= 86400:  # Less than 1 day of history — not meaningful
+        return 0
+    ln_floor = math.log(floor)
+    if ln_floor == 0:
+        return 0
+    return -0.693 * max_age / ln_floor
+
+
+def _apply_recency_boost(results: list[dict], oldest_timestamp: float) -> list[dict]:
+    """Apply a recency multiplier to search results.
+
+    The halflife is auto-calculated so that the oldest message in the index
+    gets exactly `recency_floor` as its multiplier. Recent messages get ~1.0.
+    The decay is smooth exponential between these two points.
+
+    If recency_floor is 1.0 or oldest_timestamp is 0, no boost is applied.
+    """
+    if not results:
+        return results
+
+    config = get_config()
+    floor = config.search.recency_floor
+
+    # Disabled if floor is 1.0 (no decay) or no history span
+    if floor >= 1.0 or oldest_timestamp <= 0:
+        return results
+
+    halflife = _compute_halflife(oldest_timestamp, floor)
+    if halflife <= 0:
+        return results
+
+    now = time.time()
+
+    for result in results:
+        age_seconds = now - result["timestamp"]
+        if age_seconds < 0:
+            age_seconds = 0
+        decay = math.exp(-0.693 * age_seconds / halflife)
+        result["score"] = result["score"] * decay
+
+    # Re-sort by boosted score
+    results.sort(key=lambda r: r["score"], reverse=True)
+    return results

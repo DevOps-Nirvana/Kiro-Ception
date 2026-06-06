@@ -18,12 +18,13 @@ This is a Kiro MCP Power (kiro-ception) that provides semantic search across con
 | Module | Purpose |
 |--------|---------|
 | `server.py` | MCP tool definitions, initialization, workspace detection |
-| `search.py` | SearchIndex (in-memory numpy matrix), search routing (leader/follower), peer fan-out |
+| `search.py` | SearchIndex (in-memory numpy matrix), hybrid search routing (leader/follower), peer fan-out |
 | `search_utils.py` | Pure post-processing: deduplication, context windows, pagination, date parsing |
 | `background_indexer.py` | Background thread: discovers sessions, embeds messages, periodic rescan |
 | `coordination.py` | File-lock based leader election, HTTP server for followers, failover |
 | `peers.py` | Cross-machine federation: fan-out search, result merging, Argon2id + AES-256-GCM encryption |
-| `cache.py` | SQLite cache: embeddings, message metadata, session state, execution index |
+| `cache.py` | SQLite cache: embeddings, message metadata, session state, execution index, FTS5 search |
+| `migrations.py` | Schema versioning and migrations (FTS5 index creation, future schema changes) |
 | `embeddings.py` | Backend abstraction: sentence-transformers or OpenAI-compatible API |
 | `ide_loader.py` | Loads IDE conversations (legacy .chat + workspace-sessions + execution logs) |
 | `cli_loader.py` | Loads CLI conversations from SQLite database |
@@ -43,7 +44,10 @@ This is a Kiro MCP Power (kiro-ception) that provides semantic search across con
 
 ```
 MCP tool call (server.py) → search() (search.py) → leader_search()
-  → SearchIndex.search() (numpy cosine similarity)
+  → SearchIndex.search() (numpy cosine similarity — 70% weight)
+  → cache.fts_search() (FTS5 BM25 keyword match — 30% weight)
+  → _merge_hybrid_results() (combine vector + FTS scores)
+  → _apply_recency_boost() (auto-scaled exponential decay favoring recent)
   → deduplicate_results() (search_utils.py)
   → format_search_response() (search_utils.py)
     → build_context_window() for each match
@@ -74,6 +78,10 @@ On leader initialization:
 
 ### Key Design Decisions
 
+- **Hybrid search (vector + FTS5)**: Combines semantic embeddings (70% weight) with BM25 full-text search (30% weight). Results found by both methods get boosted. FTS handles exact keyword/function name lookups that embeddings miss; embeddings handle meaning-based queries that keywords miss.
+- **Recency boost with auto-scaled halflife**: Exponential decay multiplier favoring recent messages. The halflife is auto-calculated from the oldest message in the index so the decay curve scales naturally as history grows. Configurable floor (default 0.85) — set to 1.0 to disable.
+- **Schema migrations**: Versioned migrations tracked via `schema_version` in the meta table. On cache init, migrations run sequentially to bring the DB up to date. This allows schema evolution without requiring users to delete their cache.
+- **FTS5 with triggers**: The FTS virtual table stays in sync with the messages table via INSERT/UPDATE/DELETE triggers. No manual FTS maintenance needed — writes to messages automatically propagate.
 - **SQLite over pickle**: Atomic per-row writes, no full-file rewrites, concurrent reader support
 - **Execution logs for assistant responses**: Kiro IDE stores user messages in session files but assistant responses in separate execution log files (actionType="say")
 - **Code block placeholders**: `[code:python]` preserves language signal without embedding thousands of code tokens

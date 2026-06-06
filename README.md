@@ -23,10 +23,12 @@ Search results include surrounding context (messages before/after each match), r
 ### Architecture Highlights
 
 - **Non-blocking**: Heavy work (indexing, embedding) runs in background daemon threads. The MCP server responds instantly.
+- **Hybrid search**: Combines semantic vector similarity (70%) with FTS5 full-text keyword search (30%). Exact function names and keywords surface alongside meaning-based matches.
 - **Leader-follower**: Multiple Kiro windows share one index in RAM. The first process becomes the leader; others proxy via localhost HTTP, reduces overhead when having multiple windows open.
 - **Incremental**: File mtime tracking skips unchanged sessions. Text hash deduplication avoids re-embedding identical content.
 - **Crash-safe**: Database is SQLite with WAL mode. Lose at most one in-flight message on Ctrl+C/crash/Kiro quit.
 - **Eager cold-start**: On startup, loads the index from existing SQLite cache in under 1 second (if you've run before).
+- **Auto-migrating**: Schema migrations run automatically on startup — updates never require deleting your cache.
 
 ## Installation
 

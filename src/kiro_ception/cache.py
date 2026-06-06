@@ -14,6 +14,7 @@ from pathlib import Path
 import numpy as np
 
 from .config import get_config
+from .migrations import run_migrations
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +115,9 @@ class EmbeddingCache:
             (self._fingerprint,),
         )
         self.conn.commit()
+
+        # Run any pending schema migrations
+        run_migrations(self.conn)
 
     def close(self):
         """Close the database connection."""
@@ -235,6 +239,104 @@ class EmbeddingCache:
     def message_count(self) -> int:
         """Get total number of indexed messages."""
         return self.conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+
+    # --- Full-text search operations ---
+
+    def fts_search(
+        self,
+        query: str,
+        workspace: str | None = None,
+        source: str | None = None,
+        after_ts: float | None = None,
+        before_ts: float | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        """Full-text search using FTS5 with BM25 ranking.
+
+        Returns results sorted by BM25 relevance score (negative values,
+        more negative = more relevant). Applies workspace/source/date filters.
+
+        Returns list of dicts with keys matching the messages table columns
+        plus a 'fts_score' key (normalized to 0-1 range, higher = better).
+        """
+        # Check if FTS table exists (may not if migration hasn't run yet)
+        try:
+            self.conn.execute("SELECT 1 FROM messages_fts LIMIT 0")
+        except sqlite3.OperationalError:
+            return []
+
+        # Build the WHERE clause for filters
+        conditions = []
+        params: list = []
+
+        if workspace:
+            conditions.append("m.workspace LIKE ? || '%'")
+            params.append(workspace)
+        if source:
+            conditions.append("m.source = ?")
+            params.append(source)
+        if after_ts:
+            conditions.append("m.timestamp >= ?")
+            params.append(after_ts)
+        if before_ts:
+            conditions.append("m.timestamp < ?")
+            params.append(before_ts)
+
+        where_clause = ""
+        if conditions:
+            where_clause = "AND " + " AND ".join(conditions)
+
+        # FTS5 MATCH query — escape special characters for safety
+        fts_query = query.replace('"', '""')
+
+        sql = f"""
+            SELECT m.uuid, m.session_id, m.workspace, m.timestamp, m.role,
+                   m.searchable_text, m.message_index, m.source,
+                   rank AS fts_rank
+            FROM messages_fts
+            JOIN messages m ON messages_fts.rowid = m.rowid
+            WHERE messages_fts MATCH ?
+            {where_clause}
+            ORDER BY rank
+            LIMIT ?
+        """
+        params = [fts_query] + params + [limit]
+
+        try:
+            cursor = self.conn.execute(sql, params)
+        except sqlite3.OperationalError:
+            # FTS query syntax error (e.g., special chars) — fall back to no results
+            return []
+
+        rows = cursor.fetchall()
+        if not rows:
+            return []
+
+        # Normalize BM25 scores to 0-1 range (rank is negative, more negative = better)
+        # Take the best (most negative) score as the reference
+        raw_scores = [row[8] for row in rows]
+        best_score = min(raw_scores)  # Most negative
+        worst_score = max(raw_scores)  # Least negative (or 0)
+        score_range = worst_score - best_score if worst_score != best_score else 1.0
+
+        results = []
+        for row in rows:
+            uuid, session_id, ws, ts, role, text, msg_idx, src, fts_rank = row
+            # Normalize: best match → 1.0, worst match → ~0.1
+            normalized_score = 1.0 - ((fts_rank - best_score) / score_range) * 0.9
+            results.append({
+                "uuid": uuid,
+                "session_id": session_id,
+                "workspace": ws,
+                "timestamp": ts,
+                "role": role,
+                "content": text[:2000] + "..." if len(text) > 2000 else text,
+                "message_index": msg_idx,
+                "source": src,
+                "score": normalized_score,
+            })
+
+        return results
 
     # --- Session state operations ---
 

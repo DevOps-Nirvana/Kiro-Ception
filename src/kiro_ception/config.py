@@ -108,6 +108,7 @@ class SearchConfig:
     default_threshold: float = 0.2
     default_max_results: int = 10
     default_context_window: int = 3
+    recency_floor: float = 0.85  # Minimum recency multiplier (oldest message gets this)
     workspace_dir: str = ""  # Override workspace for search_project_history (empty = auto-detect)
 
 
@@ -235,6 +236,7 @@ def diff_configs(old: Config, new: Config) -> list[dict]:
         ("search.default_threshold", old.search.default_threshold, new.search.default_threshold),
         ("search.default_max_results", old.search.default_max_results, new.search.default_max_results),
         ("search.default_context_window", old.search.default_context_window, new.search.default_context_window),
+        ("search.recency_floor", old.search.recency_floor, new.search.recency_floor),
         ("search.workspace_dir", old.search.workspace_dir, new.search.workspace_dir),
         ("memory.fraction", old.memory.fraction, new.memory.fraction),
         ("memory.limit_mb", old.memory.limit_mb, new.memory.limit_mb),

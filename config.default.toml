@@ -50,6 +50,11 @@ cache_dir = "~/.cache/kiro-ception"
 default_threshold = 0.2
 default_max_results = 10
 default_context_window = 3
+# Recency floor: the minimum score multiplier applied to the oldest message.
+# The halflife is auto-calculated so the oldest message in your history gets
+# exactly this multiplier. Recent messages get ~1.0, older ones decay smoothly
+# toward this floor. Set to 1.0 to disable recency boosting entirely.
+recency_floor = 0.85
 # Override the workspace directory used by search_project_history.
 # When set, search_project_history scopes results to this path.
 # When empty (default), auto-detected from the Kiro IDE/CLI environment.
