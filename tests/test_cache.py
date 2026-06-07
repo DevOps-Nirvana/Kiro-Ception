@@ -306,3 +306,196 @@ class TestExecutionIndex:
         assert cache.get_exec_index_count() == 1
         mtimes = cache.get_all_exec_file_mtimes()
         assert mtimes["/exec/a.json"] == 200.0
+
+
+# --- Content tier operations ---
+
+
+class TestContentTierStorage:
+    """Tests for content_tier and tool_name storage and filtering."""
+
+    def _make_message_tuple(self, uuid="msg-1", session_id="sess-1", workspace="/test",
+                            timestamp=None, role="user", text="hello world",
+                            message_index=0, source="ide", text_hash="hash1",
+                            content_tier="conversation", tool_name=None):
+        if timestamp is None:
+            timestamp = time.time()
+        return (uuid, session_id, workspace, timestamp, role, text,
+                message_index, source, text_hash, content_tier, tool_name)
+
+    def test_put_message_with_content_tier(self, cache):
+        """Storing a message with content_tier persists it correctly."""
+        cache.put_message(
+            uuid="msg-1", session_id="sess-1", workspace="/test",
+            timestamp=time.time(), role="assistant", searchable_text="tool summary",
+            message_index=0, source="ide", text_hash="hash1",
+            content_tier="tool_context", tool_name="readFile",
+        )
+        cache.conn.commit()
+
+        messages = cache.get_session_messages("sess-1")
+        assert len(messages) == 1
+        assert messages[0]["content_tier"] == "tool_context"
+        assert messages[0]["tool_name"] == "readFile"
+
+    def test_put_message_defaults_to_conversation(self, cache):
+        """A message without explicit content_tier defaults to 'conversation'."""
+        cache.put_message(
+            uuid="msg-1", session_id="sess-1", workspace="/test",
+            timestamp=time.time(), role="user", searchable_text="hello",
+            message_index=0, source="ide", text_hash="hash1",
+        )
+        cache.conn.commit()
+
+        messages = cache.get_session_messages("sess-1")
+        assert len(messages) == 1
+        assert messages[0]["content_tier"] == "conversation"
+        assert messages[0]["tool_name"] is None
+
+    def test_put_messages_batch_with_content_tier(self, cache):
+        """Batch insert with 11-element tuples persists content_tier and tool_name."""
+        msgs = [
+            self._make_message_tuple(
+                uuid="msg-1", text="user prompt", role="user",
+                content_tier="conversation", tool_name=None, message_index=0,
+            ),
+            self._make_message_tuple(
+                uuid="msg-2", text="[readFile] /src/app.ts → completed",
+                role="assistant", content_tier="tool_context",
+                tool_name="readFile", message_index=1,
+            ),
+            self._make_message_tuple(
+                uuid="msg-3", text="assistant response", role="assistant",
+                content_tier="conversation", tool_name=None, message_index=2,
+            ),
+        ]
+        cache.put_messages_batch(msgs)
+
+        messages = cache.get_session_messages("sess-1")
+        assert len(messages) == 3
+        assert messages[0]["content_tier"] == "conversation"
+        assert messages[0]["tool_name"] is None
+        assert messages[1]["content_tier"] == "tool_context"
+        assert messages[1]["tool_name"] == "readFile"
+        assert messages[2]["content_tier"] == "conversation"
+        assert messages[2]["tool_name"] is None
+
+    def test_put_messages_batch_backward_compat_9_element_tuples(self, cache):
+        """9-element tuples (legacy format) default to conversation tier."""
+        msgs = [
+            ("msg-1", "sess-1", "/test", time.time(), "user", "hello",
+             0, "ide", "hash1"),
+        ]
+        cache.put_messages_batch(msgs)
+
+        messages = cache.get_session_messages("sess-1")
+        assert len(messages) == 1
+        assert messages[0]["content_tier"] == "conversation"
+        assert messages[0]["tool_name"] is None
+
+    def test_get_session_messages_returns_content_tier_fields(self, cache):
+        """get_session_messages includes content_tier and tool_name in results."""
+        cache.put_message(
+            uuid="msg-1", session_id="sess-1", workspace="/test",
+            timestamp=time.time(), role="assistant", searchable_text="summary",
+            message_index=0, source="ide", text_hash="hash1",
+            content_tier="tool_context", tool_name="grep_search",
+        )
+        cache.conn.commit()
+
+        messages = cache.get_session_messages("sess-1")
+        assert "content_tier" in messages[0]
+        assert "tool_name" in messages[0]
+        assert messages[0]["content_tier"] == "tool_context"
+        assert messages[0]["tool_name"] == "grep_search"
+
+
+class TestFtsSearchContentTierFiltering:
+    """Tests for fts_search content_tier filtering."""
+
+    def _insert_mixed_tier_messages(self, cache):
+        """Insert messages of both tiers for search testing."""
+        now = time.time()
+        msgs = [
+            ("msg-conv-1", "sess-1", "/test", now, "user",
+             "deploy the application server", 0, "ide", "h1",
+             "conversation", None),
+            ("msg-tool-1", "sess-1", "/test", now, "assistant",
+             "[execute_pwsh] deploy script → completed", 1, "ide", "h2",
+             "tool_context", "execute_pwsh"),
+            ("msg-conv-2", "sess-1", "/test", now, "assistant",
+             "I deployed the application server successfully", 2, "ide", "h3",
+             "conversation", None),
+            ("msg-tool-2", "sess-1", "/test", now, "assistant",
+             "[readFile] /deploy/config.yaml → completed", 3, "ide", "h4",
+             "tool_context", "readFile"),
+        ]
+        cache.put_messages_batch(msgs)
+
+    def test_fts_default_returns_conversation_only(self, cache):
+        """By default, fts_search only matches conversation tier messages."""
+        self._insert_mixed_tier_messages(cache)
+
+        results = cache.fts_search("deploy")
+        # Should find "deploy the application server" and "I deployed..." but NOT
+        # the tool_context messages
+        assert len(results) > 0
+        for r in results:
+            assert r["content_tier"] == "conversation"
+
+    def test_fts_include_tool_context_returns_both_tiers(self, cache):
+        """With include_tool_context=True, search matches both tiers."""
+        self._insert_mixed_tier_messages(cache)
+
+        results = cache.fts_search("deploy", include_tool_context=True)
+        tiers = {r["content_tier"] for r in results}
+        # Should find results in both tiers
+        assert "conversation" in tiers
+        assert "tool_context" in tiers
+
+    def test_fts_results_include_content_tier_field(self, cache):
+        """Search results include content_tier in the returned dicts."""
+        self._insert_mixed_tier_messages(cache)
+
+        results = cache.fts_search("deploy", include_tool_context=True)
+        assert len(results) > 0
+        for r in results:
+            assert "content_tier" in r
+
+    def test_fts_results_include_tool_name_when_present(self, cache):
+        """Search results include tool_name for tool_context matches."""
+        self._insert_mixed_tier_messages(cache)
+
+        results = cache.fts_search("readFile", include_tool_context=True)
+        tool_results = [r for r in results if r["content_tier"] == "tool_context"]
+        assert len(tool_results) > 0
+        assert tool_results[0].get("tool_name") == "readFile"
+
+    def test_fts_conversation_results_omit_tool_name(self, cache):
+        """Conversation results don't include tool_name key when it's None."""
+        self._insert_mixed_tier_messages(cache)
+
+        results = cache.fts_search("deploy")
+        conv_results = [r for r in results if r["content_tier"] == "conversation"]
+        assert len(conv_results) > 0
+        for r in conv_results:
+            assert "tool_name" not in r
+
+    def test_fts_tool_context_excluded_by_default(self, cache):
+        """A query that only matches tool_context returns empty when default filtering."""
+        now = time.time()
+        msgs = [
+            ("msg-tool-only", "sess-1", "/test", now, "assistant",
+             "[grep_search] uniquepattern123 (5 results) → completed", 0, "ide", "h1",
+             "tool_context", "grep_search"),
+        ]
+        cache.put_messages_batch(msgs)
+
+        # Without include_tool_context, this should not match
+        results = cache.fts_search("uniquepattern123")
+        assert len(results) == 0
+
+        # With include_tool_context, it should match
+        results = cache.fts_search("uniquepattern123", include_tool_context=True)
+        assert len(results) == 1
+        assert results[0]["content_tier"] == "tool_context"

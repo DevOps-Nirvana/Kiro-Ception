@@ -1,0 +1,49 @@
+{
+  "executionId": "exec-noprompt-001",
+  "workflowType": "act",
+  "status": "completed",
+  "startTime": "2026-06-15T18:00:00.000Z",
+  "input": {
+    "data": {
+      "userPrompt": null
+    }
+  },
+  "autonomyMode": "autopilot",
+  "chatSessionId": "session-no-prompt-001",
+  "actions": [
+    {
+      "type": "action",
+      "executionId": "exec-noprompt-001",
+      "actionId": "action-n-001",
+      "actionState": "completed",
+      "actionType": "readFile",
+      "input": {
+        "path": "/src/index.ts"
+      },
+      "output": {
+        "filePath": "/src/index.ts",
+        "content": "import { app } from './app';\n\napp.listen(3000, () => console.log('Server running'));"
+      },
+      "chatSessionId": "session-no-prompt-001",
+      "emittedAt": 1718470801000
+    },
+    {
+      "type": "action",
+      "executionId": "exec-noprompt-001",
+      "actionId": "action-n-002",
+      "actionState": "completed",
+      "actionType": "say",
+      "input": {},
+      "output": {
+        "message": "The server entry point looks straightforward. The app is initialized in a separate module and listens on port 3000."
+      },
+      "chatSessionId": "session-no-prompt-001",
+      "emittedAt": 1718470815000
+    }
+  ],
+  "context": [],
+  "result": {},
+  "endTime": "2026-06-15T18:00:30.000Z",
+  "usageSummary": {},
+  "contextUsagePercentage": 5.2
+}

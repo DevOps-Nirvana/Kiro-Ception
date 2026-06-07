@@ -79,10 +79,10 @@ class SearchIndex:
             self._loading = True
             return
 
-        # Load all messages with their text_hash
+        # Load all messages with their text_hash and content_tier
         cursor = cache.conn.execute(
             """SELECT uuid, session_id, workspace, timestamp, role, searchable_text,
-                      message_index, source, text_hash
+                      message_index, source, text_hash, content_tier
                FROM messages"""
         )
         rows = cursor.fetchall()
@@ -113,7 +113,7 @@ class SearchIndex:
         embedding_list = []
 
         for row in rows:
-            uuid, session_id, ws, ts, role, text, msg_idx, src, text_hash = row
+            uuid, session_id, ws, ts, role, text, msg_idx, src, text_hash, content_tier = row
             emb = embeddings_dict.get(text_hash)
             if emb is None:
                 continue
@@ -129,6 +129,7 @@ class SearchIndex:
                 "content": text[:2000] + "..." if len(text) > 2000 else text,
                 "message_index": msg_idx,
                 "source": src,
+                "content_tier": content_tier or "conversation",
             })
             embedding_list.append(emb)
 
@@ -163,8 +164,14 @@ class SearchIndex:
         before_ts: float | None = None,
         threshold: float = 0.2,
         max_results: int = 100,
+        include_tool_context: bool = False,
     ) -> list[dict]:
-        """Fast vectorized search against the in-memory matrix."""
+        """Fast vectorized search against the in-memory matrix.
+
+        When include_tool_context is False (default), only matches messages with
+        content_tier="conversation". When True, matches both "conversation" and
+        "tool_context" messages.
+        """
         self.refresh_if_needed()
 
         if self._embeddings is None or self._count == 0:
@@ -175,6 +182,14 @@ class SearchIndex:
 
         # Build candidate mask for filtering
         mask = similarities >= threshold
+
+        # Apply content_tier filter: exclude tool_context when not requested
+        if not include_tool_context:
+            for i in range(self._count):
+                if not mask[i]:
+                    continue
+                if self._metadata[i]["content_tier"] != "conversation":
+                    mask[i] = False
 
         # Apply filters
         if workspace or source or after_ts or before_ts:
@@ -249,6 +264,7 @@ def handle_search_request(request: dict) -> dict:
         threshold=request.get("threshold", 0.2),
         max_results=request.get("max_results", 10),
         offset=request.get("offset", 0),
+        include_tool_context=request.get("include_tool_context", False),
     )
 
 
@@ -262,6 +278,7 @@ def search(
     threshold: float,
     max_results: int,
     offset: int,
+    include_tool_context: bool = False,
 ) -> dict:
     """Search implementation with leader/follower routing.
 
@@ -285,6 +302,7 @@ def search(
                     "threshold": threshold,
                     "max_results": max_results,
                     "offset": offset,
+                    "include_tool_context": include_tool_context,
                 })
             except Exception:
                 # Leader unreachable — attempt promotion
@@ -304,12 +322,13 @@ def search(
 
     # Leader path: search directly
     local_response = leader_search(query, workspace, source, after, before,
-                                   context_size, threshold, max_results, offset)
+                                   context_size, threshold, max_results, offset,
+                                   include_tool_context)
 
     # Fan out to peers if configured
     return _search_with_peers(
         local_response, query, workspace, source, after, before,
-        context_size, threshold, max_results, offset,
+        context_size, threshold, max_results, offset, include_tool_context,
     )
 
 
@@ -323,6 +342,7 @@ def leader_search(
     threshold: float,
     max_results: int,
     offset: int,
+    include_tool_context: bool = False,
 ) -> dict:
     """Direct search using in-memory numpy matrix (leader only)."""
     indexer = get_background_indexer()
@@ -386,6 +406,7 @@ def leader_search(
         before_ts=before_dt.timestamp() if before_dt else None,
         threshold=threshold,
         max_results=(offset + max_results) * 3,  # Over-fetch for dedup
+        include_tool_context=include_tool_context,
     )
 
     # Hybrid search: also run FTS5 full-text search and merge results
@@ -435,6 +456,7 @@ def _search_with_peers(
     threshold: float,
     max_results: int,
     offset: int,
+    include_tool_context: bool = False,
 ) -> dict:
     """Merge local results with peer results if peering is enabled."""
     peer_request = {
@@ -447,6 +469,7 @@ def _search_with_peers(
         "threshold": threshold,
         "max_results": max_results,
         "offset": offset,
+        "include_tool_context": include_tool_context,
     }
 
     peer_responses = fan_out_search(peer_request)

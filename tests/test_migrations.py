@@ -2,6 +2,7 @@
 
 import sqlite3
 import time
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -9,7 +10,9 @@ import pytest
 from kiro_ception.cache import EmbeddingCache
 from kiro_ception.migrations import (
     CURRENT_SCHEMA_VERSION,
+    _execute_with_retry,
     _migrate_v1_to_v2,
+    _migrate_v2_to_v3,
     get_schema_version,
     run_migrations,
 )
@@ -186,6 +189,232 @@ class TestFTSMigrationWithData:
         results = cursor.fetchall()
         assert len(results) == 1
         assert results[0][0] == "u3"
+        conn.close()
+
+
+class TestV2ToV3Migration:
+    """Test the v2→v3 migration that adds content_tier and tool_name columns."""
+
+    def _create_v2_db(self, tmp_path):
+        """Create a v2 database (has FTS, no content_tier/tool_name)."""
+        db_path = tmp_path / "cache_v2test.db"
+        conn = sqlite3.connect(db_path)
+        conn.executescript("""
+            CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE messages (
+                uuid TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                workspace TEXT NOT NULL,
+                timestamp REAL NOT NULL,
+                role TEXT NOT NULL,
+                searchable_text TEXT NOT NULL,
+                message_index INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                text_hash TEXT NOT NULL
+            );
+            CREATE TABLE embeddings (
+                text_hash TEXT PRIMARY KEY,
+                embedding BLOB NOT NULL,
+                dimensions INTEGER NOT NULL,
+                created_at REAL NOT NULL
+            );
+            CREATE TABLE session_state (
+                session_id TEXT PRIMARY KEY,
+                mtime REAL NOT NULL,
+                fingerprint TEXT NOT NULL,
+                indexed_at REAL NOT NULL
+            );
+            CREATE TABLE execution_index (
+                exec_file_path TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                file_mtime REAL NOT NULL
+            );
+            CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+                searchable_text,
+                content='messages',
+                content_rowid='rowid',
+                tokenize='porter unicode61'
+            );
+        """)
+        conn.execute(
+            "INSERT INTO meta (key, value) VALUES ('schema_version', '2')"
+        )
+        conn.commit()
+        return conn
+
+    def test_v2_db_migrates_to_v3(self, tmp_path):
+        """A v2 database should be migrated to v3 with new columns."""
+        conn = self._create_v2_db(tmp_path)
+        assert get_schema_version(conn) == 2
+
+        run_migrations(conn)
+
+        assert get_schema_version(conn) == CURRENT_SCHEMA_VERSION
+
+        # Verify content_tier column exists with correct default
+        conn.execute(
+            "INSERT INTO messages (uuid, session_id, workspace, timestamp, role, "
+            "searchable_text, message_index, source, text_hash) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("u1", "s1", "/ws", time.time(), "user", "test text", 0, "ide", "h1"),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT content_tier, tool_name FROM messages WHERE uuid = 'u1'"
+        ).fetchone()
+        assert row[0] == "conversation"  # DEFAULT value
+        assert row[1] is None  # NULL for tool_name
+        conn.close()
+
+    def test_content_tier_column_added(self, tmp_path):
+        """Migration adds content_tier column with NOT NULL DEFAULT 'conversation'."""
+        conn = self._create_v2_db(tmp_path)
+
+        # Insert a message before migration
+        conn.execute(
+            "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("pre", "s1", "/ws", time.time(), "user", "existing msg", 0, "ide", "h0"),
+        )
+        conn.commit()
+
+        _migrate_v2_to_v3(conn)
+
+        # Existing messages should default to 'conversation'
+        row = conn.execute(
+            "SELECT content_tier FROM messages WHERE uuid = 'pre'"
+        ).fetchone()
+        assert row[0] == "conversation"
+        conn.close()
+
+    def test_tool_name_column_added(self, tmp_path):
+        """Migration adds nullable tool_name column."""
+        conn = self._create_v2_db(tmp_path)
+        _migrate_v2_to_v3(conn)
+
+        # Insert with explicit tool_name
+        conn.execute(
+            "INSERT INTO messages (uuid, session_id, workspace, timestamp, role, "
+            "searchable_text, message_index, source, text_hash, content_tier, tool_name) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("t1", "s1", "/ws", time.time(), "assistant", "summary", 1, "ide", "ht",
+             "tool_context", "readFile"),
+        )
+        conn.commit()
+
+        row = conn.execute(
+            "SELECT tool_name FROM messages WHERE uuid = 't1'"
+        ).fetchone()
+        assert row[0] == "readFile"
+        conn.close()
+
+    def test_content_tier_index_created(self, tmp_path):
+        """Migration creates idx_messages_content_tier index."""
+        conn = self._create_v2_db(tmp_path)
+        _migrate_v2_to_v3(conn)
+
+        # Verify the index exists
+        indexes = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_messages_content_tier'"
+        ).fetchall()
+        assert len(indexes) == 1
+        conn.close()
+
+    def test_migration_handles_column_already_exists(self, tmp_path):
+        """Running migration twice does not error on duplicate columns."""
+        conn = self._create_v2_db(tmp_path)
+
+        # Run migration twice — second should be graceful
+        _migrate_v2_to_v3(conn)
+        _migrate_v2_to_v3(conn)  # Should not raise
+
+        # Verify columns still work
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name='messages'"
+        ).fetchone()
+        assert "content_tier" in row[0]
+        assert "tool_name" in row[0]
+        conn.close()
+
+    def test_migration_handles_locked_database_with_retry(self, tmp_path):
+        """Migration retries on database lock with exponential backoff."""
+        call_count = [0]
+
+        class LockingConnection:
+            """Wrapper that simulates a locked database on first attempt."""
+
+            def __init__(self, conn):
+                self._conn = conn
+
+            def execute(self, sql, *args, **kwargs):
+                if "ALTER TABLE" in sql and "content_tier" in sql and call_count[0] < 1:
+                    call_count[0] += 1
+                    raise sqlite3.OperationalError("database is locked")
+                return self._conn.execute(sql, *args, **kwargs)
+
+            def commit(self):
+                return self._conn.commit()
+
+        conn = self._create_v2_db(tmp_path)
+        wrapper = LockingConnection(conn)
+
+        with patch("kiro_ception.migrations.time.sleep") as mock_sleep:
+            _execute_with_retry(
+                wrapper,
+                "ALTER TABLE messages ADD COLUMN content_tier TEXT NOT NULL DEFAULT 'conversation'",
+                "content_tier column",
+            )
+            # Should have retried once with 1s delay (2^0 = 1)
+            mock_sleep.assert_called_once_with(1)
+
+        # Verify the column was added on retry
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name='messages'"
+        ).fetchone()
+        assert "content_tier" in row[0]
+        conn.close()
+
+    def test_migration_raises_after_max_lock_retries(self, tmp_path):
+        """Migration raises after exhausting lock retry attempts."""
+
+        class AlwaysLockedConnection:
+            """Wrapper that always raises 'database is locked'."""
+
+            def execute(self, sql, *args, **kwargs):
+                raise sqlite3.OperationalError("database is locked")
+
+        wrapper = AlwaysLockedConnection()
+
+        with patch("kiro_ception.migrations.time.sleep"):
+            with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+                _execute_with_retry(
+                    wrapper,
+                    "ALTER TABLE messages ADD COLUMN content_tier TEXT NOT NULL DEFAULT 'conversation'",
+                    "content_tier column",
+                )
+
+    def test_existing_messages_get_default_tier(self, tmp_path):
+        """Existing messages in a v2 DB default to 'conversation' tier after migration."""
+        conn = self._create_v2_db(tmp_path)
+
+        # Insert messages before migration
+        conn.executemany(
+            "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                ("m1", "s1", "/ws", time.time(), "user", "Hello", 0, "ide", "h1"),
+                ("m2", "s1", "/ws", time.time(), "assistant", "Hi back", 1, "ide", "h2"),
+            ],
+        )
+        conn.commit()
+
+        _migrate_v2_to_v3(conn)
+
+        rows = conn.execute(
+            "SELECT uuid, content_tier, tool_name FROM messages ORDER BY uuid"
+        ).fetchall()
+        assert len(rows) == 2
+        for row in rows:
+            assert row[1] == "conversation"
+            assert row[2] is None
         conn.close()
 
 

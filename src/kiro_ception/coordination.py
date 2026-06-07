@@ -381,13 +381,22 @@ class LeaderInstance:
                             status["fts_enabled"] = False
                         status["uptime_seconds"] = round(time.time() - _process_start_time, 1)
                         # Process memory usage
-                        import resource
-                        import platform as _platform
-                        mem_bytes = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-                        if _platform.system() == "Darwin":
-                            mem_mb = mem_bytes / (1024 * 1024)
-                        else:
-                            mem_mb = mem_bytes / 1024
+                        try:
+                            import resource
+                            import platform as _platform
+                            mem_bytes = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+                            if _platform.system() == "Darwin":
+                                mem_mb = mem_bytes / (1024 * 1024)
+                            else:
+                                mem_mb = mem_bytes / 1024
+                        except ImportError:
+                            # Windows: use psutil or fallback
+                            import os
+                            try:
+                                import psutil
+                                mem_mb = psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
+                            except ImportError:
+                                mem_mb = 0.0
                         status["memory_used_mb"] = round(mem_mb, 1)
                         from .memory import get_memory_limit
                         memory_limit = get_memory_limit()

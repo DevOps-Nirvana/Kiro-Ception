@@ -94,6 +94,7 @@ def search_project_history(
     threshold: float = 0.2,
     max_results: int = 10,
     offset: int = 0,
+    include_tool_context: bool = False,
 ) -> dict:
     """
     Search conversation history for the CURRENT WORKSPACE only.
@@ -109,6 +110,10 @@ def search_project_history(
         threshold: Minimum similarity 0-1 (default: 0.2)
         max_results: Maximum results to return (default: 10)
         offset: Skip results for pagination (default: 0)
+        include_tool_context: Also search tool call summaries (default: false).
+                When false, only conversation messages (user prompts and assistant
+                responses) are matched. When true, tool context summaries are
+                also included as searchable content.
 
     Returns:
         Search results with matched messages, scores, context, and pagination info
@@ -124,6 +129,7 @@ def search_project_history(
         threshold=threshold,
         max_results=max_results,
         offset=offset,
+        include_tool_context=include_tool_context,
     )
 
 
@@ -137,6 +143,7 @@ def search_global_history(
     max_results: int = 10,
     offset: int = 0,
     source: str = "all",
+    include_tool_context: bool = False,
 ) -> dict:
     """
     Search conversation history across ALL WORKSPACES.
@@ -155,6 +162,10 @@ def search_global_history(
         source: Filter by conversation source. Options: "all" (default), "cli", "ide".
                 Only set to "cli" or "ide" if the user explicitly asks to search
                 only CLI or only IDE conversations. Otherwise leave as "all".
+        include_tool_context: Also search tool call summaries (default: false).
+                When false, only conversation messages (user prompts and assistant
+                responses) are matched. When true, tool context summaries are
+                also included as searchable content.
 
     Returns:
         Search results with matched messages, scores, workspace, context, pagination
@@ -176,6 +187,7 @@ def search_global_history(
         threshold=threshold,
         max_results=max_results,
         offset=offset,
+        include_tool_context=include_tool_context,
     )
 
 
@@ -236,13 +248,23 @@ def get_indexing_status() -> dict:
     status["uptime_seconds"] = round(_time.time() - _process_start_time, 1)
 
     # Process memory usage
-    import resource
-    mem_bytes = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    # macOS reports in bytes, Linux in kilobytes
-    if platform.system() == "Darwin":
-        mem_mb = mem_bytes / (1024 * 1024)
-    else:
-        mem_mb = mem_bytes / 1024
+    try:
+        import resource
+        mem_bytes = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        # macOS reports in bytes, Linux in kilobytes
+        if platform.system() == "Darwin":
+            mem_mb = mem_bytes / (1024 * 1024)
+        else:
+            mem_mb = mem_bytes / 1024
+    except ImportError:
+        # Windows: use psutil or fallback
+        import os
+        try:
+            import psutil
+            mem_mb = psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
+        except ImportError:
+            # Fallback: rough estimate via os on Windows
+            mem_mb = 0.0
     status["memory_used_mb"] = round(mem_mb, 1)
     memory_limit = get_memory_limit()
     if memory_limit > 0:
@@ -549,6 +571,20 @@ if _startup_config.peers.enabled and _startup_config.peers.debug_tool_enabled:
 
 def main():
     """Run the MCP server."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Kiro Ception MCP server")
+    parser.add_argument(
+        "--config",
+        metavar="PATH",
+        help="Path to config.toml (overrides ~/.config/kiro-ception/config.toml)",
+    )
+    args = parser.parse_args()
+
+    if args.config:
+        from .config import set_config_file
+        set_config_file(args.config)
+
     config = _get_config()
     if not config.server.deferred_init:
         _initialize()

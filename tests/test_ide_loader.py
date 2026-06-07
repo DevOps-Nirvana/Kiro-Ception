@@ -193,3 +193,223 @@ class TestParseTimestamp:
     def test_zero_timestamp(self):
         result = _parse_timestamp(0)
         assert isinstance(result, datetime)
+
+
+# --- _extract_user_prompt_from_execution_log ---
+
+import json
+import tempfile
+from pathlib import Path
+
+from kiro_ception.ide_loader import _extract_user_prompt_from_execution_log
+from kiro_ception.models import ContentTier
+
+
+class TestExtractUserPromptFromExecutionLog:
+    """Tests for extracting user prompts from execution log files."""
+
+    def _write_exec_log(self, tmp_path: Path, data: dict) -> Path:
+        """Helper to write execution log JSON to a temp file."""
+        exec_file = tmp_path / "test_exec.json"
+        exec_file.write_text(json.dumps(data), encoding="utf-8")
+        return exec_file
+
+    def test_extracts_user_prompt(self, tmp_path):
+        """Extracts input.data.userPrompt as authoritative user message."""
+        data = {
+            "input": {"data": {"userPrompt": "How do I fix this bug?"}},
+            "actions": [],
+        }
+        exec_file = self._write_exec_log(tmp_path, data)
+        result = _extract_user_prompt_from_execution_log(
+            exec_file, "session-1", "/workspace", datetime(2026, 1, 1)
+        )
+        assert result is not None
+        assert result.searchable_text == "How do I fix this bug?"
+        assert result.role == "user"
+        assert result.content_tier == ContentTier.CONVERSATION
+
+    def test_applies_code_block_replacement(self, tmp_path):
+        """Applies _replace_code_blocks to extracted prompt."""
+        data = {
+            "input": {"data": {"userPrompt": "Fix this:\n```python\ndef foo():\n    pass\n```"}},
+            "actions": [],
+        }
+        exec_file = self._write_exec_log(tmp_path, data)
+        result = _extract_user_prompt_from_execution_log(
+            exec_file, "session-1", "/workspace", datetime(2026, 1, 1)
+        )
+        assert result is not None
+        assert "[code:python]" in result.searchable_text
+        assert "def foo():" not in result.searchable_text
+
+    def test_applies_should_skip_filter(self, tmp_path):
+        """Filters out system prompts via _should_skip_message."""
+        data = {
+            "input": {"data": {"userPrompt": "# System Prompt\nYou are an AI assistant"}},
+            "actions": [],
+        }
+        exec_file = self._write_exec_log(tmp_path, data)
+        result = _extract_user_prompt_from_execution_log(
+            exec_file, "session-1", "/workspace", datetime(2026, 1, 1)
+        )
+        assert result is None
+
+    def test_returns_none_for_absent_user_prompt(self, tmp_path):
+        """Returns None when input.data.userPrompt is absent (fallback case)."""
+        data = {
+            "input": {"data": {"otherField": "value"}},
+            "actions": [],
+        }
+        exec_file = self._write_exec_log(tmp_path, data)
+        result = _extract_user_prompt_from_execution_log(
+            exec_file, "session-1", "/workspace", datetime(2026, 1, 1)
+        )
+        assert result is None
+
+    def test_returns_none_for_null_user_prompt(self, tmp_path):
+        """Returns None when input.data.userPrompt is null."""
+        data = {
+            "input": {"data": {"userPrompt": None}},
+            "actions": [],
+        }
+        exec_file = self._write_exec_log(tmp_path, data)
+        result = _extract_user_prompt_from_execution_log(
+            exec_file, "session-1", "/workspace", datetime(2026, 1, 1)
+        )
+        assert result is None
+
+    def test_returns_none_for_empty_user_prompt(self, tmp_path):
+        """Returns None when input.data.userPrompt is empty string."""
+        data = {
+            "input": {"data": {"userPrompt": ""}},
+            "actions": [],
+        }
+        exec_file = self._write_exec_log(tmp_path, data)
+        result = _extract_user_prompt_from_execution_log(
+            exec_file, "session-1", "/workspace", datetime(2026, 1, 1)
+        )
+        assert result is None
+
+    def test_returns_none_for_whitespace_only_prompt(self, tmp_path):
+        """Returns None when input.data.userPrompt is just whitespace."""
+        data = {
+            "input": {"data": {"userPrompt": "   \n\t  "}},
+            "actions": [],
+        }
+        exec_file = self._write_exec_log(tmp_path, data)
+        result = _extract_user_prompt_from_execution_log(
+            exec_file, "session-1", "/workspace", datetime(2026, 1, 1)
+        )
+        assert result is None
+
+    def test_handles_malformed_json(self, tmp_path):
+        """Logs warning and returns None for malformed JSON."""
+        exec_file = tmp_path / "bad.json"
+        exec_file.write_text("not valid json {{{", encoding="utf-8")
+        result = _extract_user_prompt_from_execution_log(
+            exec_file, "session-1", "/workspace", datetime(2026, 1, 1)
+        )
+        assert result is None
+
+    def test_handles_missing_input_field(self, tmp_path):
+        """Returns None gracefully when 'input' field is missing."""
+        data = {"actions": []}
+        exec_file = self._write_exec_log(tmp_path, data)
+        result = _extract_user_prompt_from_execution_log(
+            exec_file, "session-1", "/workspace", datetime(2026, 1, 1)
+        )
+        assert result is None
+
+    def test_handles_input_not_dict(self, tmp_path):
+        """Returns None when 'input' is not a dict."""
+        data = {"input": "not a dict", "actions": []}
+        exec_file = self._write_exec_log(tmp_path, data)
+        result = _extract_user_prompt_from_execution_log(
+            exec_file, "session-1", "/workspace", datetime(2026, 1, 1)
+        )
+        assert result is None
+
+    def test_handles_data_field_not_dict(self, tmp_path):
+        """Returns None when 'input.data' is not a dict."""
+        data = {"input": {"data": "string"}, "actions": []}
+        exec_file = self._write_exec_log(tmp_path, data)
+        result = _extract_user_prompt_from_execution_log(
+            exec_file, "session-1", "/workspace", datetime(2026, 1, 1)
+        )
+        assert result is None
+
+    def test_uses_start_time_for_timestamp(self, tmp_path):
+        """Uses startTime from execution log as message timestamp."""
+        data = {
+            "input": {"data": {"userPrompt": "hello"}},
+            "startTime": 1717614000000,  # 2024-06-05
+            "actions": [],
+        }
+        exec_file = self._write_exec_log(tmp_path, data)
+        result = _extract_user_prompt_from_execution_log(
+            exec_file, "session-1", "/workspace", datetime(2026, 1, 1)
+        )
+        assert result is not None
+        assert result.timestamp.year == 2024
+
+    def test_falls_back_to_provided_timestamp(self, tmp_path):
+        """Uses fallback_timestamp when startTime is absent."""
+        data = {
+            "input": {"data": {"userPrompt": "hello"}},
+            "actions": [],
+        }
+        exec_file = self._write_exec_log(tmp_path, data)
+        fallback = datetime(2025, 3, 15, 10, 30)
+        result = _extract_user_prompt_from_execution_log(
+            exec_file, "session-1", "/workspace", fallback
+        )
+        assert result is not None
+        assert result.timestamp == fallback
+
+    def test_generates_stable_uuid(self, tmp_path):
+        """Generates a deterministic UUID based on session_id and file stem."""
+        data = {
+            "input": {"data": {"userPrompt": "hello"}},
+            "actions": [],
+        }
+        exec_file = self._write_exec_log(tmp_path, data)
+        result = _extract_user_prompt_from_execution_log(
+            exec_file, "session-1", "/workspace", datetime(2026, 1, 1)
+        )
+        assert result is not None
+        assert result.uuid == f"session-1-prompt-{exec_file.stem}"
+
+    def test_handles_nonexistent_file(self, tmp_path):
+        """Returns None for a file that doesn't exist."""
+        exec_file = tmp_path / "nonexistent.json"
+        result = _extract_user_prompt_from_execution_log(
+            exec_file, "session-1", "/workspace", datetime(2026, 1, 1)
+        )
+        assert result is None
+
+    def test_user_prompt_not_string(self, tmp_path):
+        """Returns None when userPrompt is not a string (e.g., integer)."""
+        data = {
+            "input": {"data": {"userPrompt": 12345}},
+            "actions": [],
+        }
+        exec_file = self._write_exec_log(tmp_path, data)
+        result = _extract_user_prompt_from_execution_log(
+            exec_file, "session-1", "/workspace", datetime(2026, 1, 1)
+        )
+        assert result is None
+
+    def test_source_is_ide(self, tmp_path):
+        """Extracted messages have source=IDE."""
+        data = {
+            "input": {"data": {"userPrompt": "hello"}},
+            "actions": [],
+        }
+        exec_file = self._write_exec_log(tmp_path, data)
+        result = _extract_user_prompt_from_execution_log(
+            exec_file, "session-1", "/workspace", datetime(2026, 1, 1)
+        )
+        assert result is not None
+        from kiro_ception.models import Source
+        assert result.source == Source.IDE
