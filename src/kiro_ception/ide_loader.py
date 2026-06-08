@@ -222,7 +222,11 @@ def _get_workspace_sessions_dirs() -> list[Path]:
 
 
 def _list_workspace_sessions() -> list[SessionInfo]:
-    """List all sessions from workspace-sessions directories."""
+    """List all sessions from workspace-sessions directories.
+
+    Uses stat() only for timestamps — skips expensive sessions.json parsing
+    to minimize memory allocations during periodic rescans.
+    """
     sessions = []
 
     for ws_dir in _get_workspace_sessions_dirs():
@@ -254,27 +258,11 @@ def _list_workspace_sessions() -> list[SessionInfo]:
                     stat = session_file.stat()
                     session_id = session_file.stem
 
-                    # Try to get creation date from sessions.json if available
-                    created = datetime.fromtimestamp(stat.st_ctime)
-                    sessions_meta_file = workspace_dir / "sessions.json"
-                    if sessions_meta_file.exists():
-                        try:
-                            with open(sessions_meta_file, encoding="utf-8") as f:
-                                meta_list = json.load(f)
-                            for meta in meta_list:
-                                if meta.get("sessionId") == session_id:
-                                    date_created = meta.get("dateCreated")
-                                    if date_created:
-                                        created = _parse_timestamp(int(date_created)) or created
-                                    break
-                        except (json.JSONDecodeError, OSError, ValueError):
-                            pass
-
                     sessions.append(
                         SessionInfo(
                             session_id=session_id,
                             workspace=workspace_path,
-                            created=created,
+                            created=datetime.fromtimestamp(stat.st_ctime),
                             modified=datetime.fromtimestamp(stat.st_mtime),
                             source=Source.IDE,
                         )

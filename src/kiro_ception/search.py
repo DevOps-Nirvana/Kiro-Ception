@@ -30,16 +30,20 @@ class SearchIndex:
     """In-memory numpy matrix for fast vectorized cosine similarity search.
 
     Loaded from the SQLite cache. Uses incremental refresh (append-only) every
-    60 seconds for new messages, with a full rebuild every 30 minutes to handle
-    deletions and re-indexed sessions. This avoids repeated full-table scans
-    and reduces memory fragmentation from constant allocate/free cycles.
+    60 seconds for new messages. The matrix is pre-allocated with headroom to
+    avoid repeated full-copy allocations on growth. Full rebuilds only happen
+    on first load or explicit invalidation.
     """
 
+    # Pre-allocate 10% extra capacity to avoid frequent resizes
+    _GROWTH_FACTOR = 1.1
+
     def __init__(self):
-        self._embeddings: np.ndarray | None = None  # shape: (N, dims)
+        self._embeddings: np.ndarray | None = None  # shape: (capacity, dims)
         self._metadata: list[dict] = []  # parallel to embeddings rows
         self._last_refresh: float = 0
-        self._count: int = 0
+        self._count: int = 0  # Actual filled rows (may be < capacity)
+        self._capacity: int = 0  # Total allocated rows in the matrix
         self._loading: bool = False  # True when embeddings exist but metadata not yet populated
         self._embedding_count_hint: int = 0  # For informative "loading" messages
         self._ever_loaded: bool = False  # Has the index ever successfully loaded data?
@@ -86,7 +90,8 @@ class SearchIndex:
     def _full_refresh(self):
         """Full rebuild: load all messages + embeddings from sqlite into numpy arrays.
 
-        Used on first load and periodically (every 30 min) to handle deletions.
+        Pre-allocates the matrix with headroom to avoid future copy-on-grow.
+        Used on first load or after explicit invalidation.
         """
         indexer = get_background_indexer()
         cache = indexer.cache
@@ -114,6 +119,7 @@ class SearchIndex:
             self._embeddings = None
             self._metadata = []
             self._count = 0
+            self._capacity = 0
             self._known_uuids = set()
             self._max_rowid = 0
             return
@@ -153,16 +159,24 @@ class SearchIndex:
 
         if embedding_list:
             try:
-                self._embeddings = np.vstack(embedding_list)
+                stacked = np.vstack(embedding_list)
             except ValueError:
                 self._embeddings = None
                 self._metadata = []
                 self._count = 0
+                self._capacity = 0
                 self._known_uuids = set()
                 self._max_rowid = 0
                 return
+            # Pre-allocate with headroom
+            count = stacked.shape[0]
+            dims = stacked.shape[1]
+            capacity = int(count * self._GROWTH_FACTOR)
+            self._embeddings = np.zeros((capacity, dims), dtype=np.float32)
+            self._embeddings[:count] = stacked
+            self._capacity = capacity
             self._metadata = metadata
-            self._count = len(metadata)
+            self._count = count
             self._loading = False
             self._ever_loaded = True
             self._known_uuids = known_uuids
@@ -172,17 +186,17 @@ class SearchIndex:
             self._embeddings = None
             self._metadata = []
             self._count = 0
+            self._capacity = 0
             self._known_uuids = set()
             self._max_rowid = 0
 
-        now = time.time()
-        self._last_refresh = now
+        self._last_refresh = time.time()
 
     def _incremental_refresh(self):
         """Incremental refresh: only load messages added since the last refresh.
 
-        Appends new messages to the existing matrix without rebuilding.
-        This dramatically reduces memory churn and fragmentation.
+        Fills new rows into the pre-allocated matrix. Only reallocates when
+        capacity is exceeded, and does so with headroom to minimize future copies.
         """
         indexer = get_background_indexer()
         cache = indexer.cache
@@ -248,15 +262,34 @@ class SearchIndex:
         self._max_rowid = max_rowid
 
         if new_embeddings:
-            new_matrix = np.vstack(new_embeddings)
-            if self._embeddings is not None:
-                self._embeddings = np.concatenate(
-                    [self._embeddings, new_matrix], axis=0
-                )
+            new_count = len(new_embeddings)
+            new_total = self._count + new_count
+
+            if self._embeddings is not None and new_total <= self._capacity:
+                # Fast path: fill into existing pre-allocated space (no copy)
+                new_matrix = np.vstack(new_embeddings)
+                self._embeddings[self._count:new_total] = new_matrix
+            elif self._embeddings is not None:
+                # Need to grow: allocate with headroom
+                new_matrix = np.vstack(new_embeddings)
+                dims = self._embeddings.shape[1]
+                new_capacity = int(new_total * self._GROWTH_FACTOR)
+                grown = np.zeros((new_capacity, dims), dtype=np.float32)
+                grown[:self._count] = self._embeddings[:self._count]
+                grown[self._count:new_total] = new_matrix
+                self._embeddings = grown
+                self._capacity = new_capacity
             else:
-                self._embeddings = new_matrix
+                # First data arriving via incremental (unusual but handle it)
+                new_matrix = np.vstack(new_embeddings)
+                capacity = int(new_count * self._GROWTH_FACTOR)
+                dims = new_matrix.shape[1]
+                self._embeddings = np.zeros((capacity, dims), dtype=np.float32)
+                self._embeddings[:new_count] = new_matrix
+                self._capacity = capacity
+
             self._metadata.extend(new_metadata)
-            self._count = len(self._metadata)
+            self._count = new_total
             # Update oldest timestamp if any new messages are older
             if new_metadata:
                 new_oldest = min(m["timestamp"] for m in new_metadata)
@@ -285,8 +318,9 @@ class SearchIndex:
         if self._embeddings is None or self._count == 0:
             return []
 
-        # Compute all similarities at once
-        similarities = np.dot(self._embeddings, query_embedding)
+        # Compute similarities only against filled rows (not pre-allocated headroom)
+        active_embeddings = self._embeddings[:self._count]
+        similarities = np.dot(active_embeddings, query_embedding)
 
         # Build candidate mask for filtering
         mask = similarities >= threshold
@@ -350,6 +384,7 @@ def invalidate_search_index():
         _search_index._embeddings = None
         _search_index._metadata = []
         _search_index._count = 0
+        _search_index._capacity = 0
         _search_index._known_uuids = set()
         _search_index._max_rowid = 0
 
