@@ -401,6 +401,11 @@ def get_config() -> dict:
         },
         "server": {
             "leader_port": config.server.leader_port,
+            "listen_address": f"127.0.0.1:{manager.leader_instance.port}"
+            if manager.is_leader and manager.leader_instance
+            else f"127.0.0.1:{manager.follower_instance.leader_port}"
+            if not manager.is_leader and manager.follower_instance and manager.follower_instance.leader_port
+            else None,
         },
         "peers": {
             "enabled": config.peers.enabled,

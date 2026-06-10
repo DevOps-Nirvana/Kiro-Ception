@@ -5,8 +5,11 @@ whatever embeddings are already cached. The indexer discovers new/changed
 sessions and embeds them incrementally in the background.
 """
 
+import ctypes
+import gc
 import hashlib
 import logging
+import platform
 import threading
 import time
 from dataclasses import dataclass
@@ -20,6 +23,17 @@ from .memory import get_memory_limit, select_sessions_within_limit
 from .sessions import list_all_sessions, load_session_messages
 
 logger = logging.getLogger(__name__)
+
+
+def _release_memory():
+    """Force garbage collection and return freed memory to the OS where possible."""
+    gc.collect()
+    # On Linux, ask glibc to return freed pages to the OS
+    if platform.system() == "Linux":
+        try:
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+        except (OSError, AttributeError):
+            pass
 
 
 class IndexerState(str, Enum):
@@ -207,6 +221,9 @@ class BackgroundIndexer:
             # Run initial indexing
             self._index_pass(config)
 
+            # Release transient memory from the indexing pass
+            _release_memory()
+
             # Mark initial pass as completed
             self._status.completed_at = time.time()
             self._status.last_completed_at = self._status.completed_at
@@ -288,6 +305,9 @@ class BackgroundIndexer:
 
                 # Run rescan
                 self._index_pass(config)
+
+                # Release transient memory from the rescan pass
+                _release_memory()
 
                 # Mark this pass as completed
                 self._status.completed_at = time.time()

@@ -29,19 +29,27 @@ _MIN_REFRESH_INTERVAL = 60  # seconds
 class SearchIndex:
     """In-memory numpy matrix for fast vectorized cosine similarity search.
 
-    Loaded from the SQLite cache. Refreshes at most once per minute to pick
-    up new embeddings from the background indexer.
+    Loaded from the SQLite cache. Uses incremental refresh (append-only) every
+    60 seconds for new messages. The matrix is pre-allocated with headroom to
+    avoid repeated full-copy allocations on growth. Full rebuilds only happen
+    on first load or explicit invalidation.
     """
 
+    # Pre-allocate 10% extra capacity to avoid frequent resizes
+    _GROWTH_FACTOR = 1.1
+
     def __init__(self):
-        self._embeddings: np.ndarray | None = None  # shape: (N, dims)
+        self._embeddings: np.ndarray | None = None  # shape: (capacity, dims)
         self._metadata: list[dict] = []  # parallel to embeddings rows
         self._last_refresh: float = 0
-        self._count: int = 0
+        self._count: int = 0  # Actual filled rows (may be < capacity)
+        self._capacity: int = 0  # Total allocated rows in the matrix
         self._loading: bool = False  # True when embeddings exist but metadata not yet populated
         self._embedding_count_hint: int = 0  # For informative "loading" messages
         self._ever_loaded: bool = False  # Has the index ever successfully loaded data?
         self._oldest_timestamp: float = 0  # Oldest message timestamp (for recency boost calc)
+        self._max_rowid: int = 0  # Highest rowid seen (for incremental detection)
+        self._known_uuids: set[str] = set()  # Track loaded UUIDs for dedup
 
     @property
     def message_count(self) -> int:
@@ -65,31 +73,41 @@ class SearchIndex:
         The 60-second throttle only applies after a successful first load.
         If the index has never loaded data, allow refresh on every call
         (so we pick up data as soon as the indexer populates the tables).
+
+        Uses incremental refresh (append-only) after the initial full load.
+        Full rebuilds only happen on first load or explicit invalidation.
         """
         now = time.time()
         if self._ever_loaded and now - self._last_refresh < _MIN_REFRESH_INTERVAL:
             return
-        self._refresh()
 
-    def _refresh(self):
-        """Load all messages + embeddings from sqlite into numpy arrays."""
+        # Full rebuild only on first load; incremental thereafter
+        if not self._ever_loaded:
+            self._full_refresh()
+        else:
+            self._incremental_refresh()
+
+    def _full_refresh(self):
+        """Full rebuild: load all messages + embeddings from sqlite into numpy arrays.
+
+        Pre-allocates the matrix with headroom to avoid future copy-on-grow.
+        Used on first load or after explicit invalidation.
+        """
         indexer = get_background_indexer()
         cache = indexer.cache
         if cache is None:
             self._loading = True
             return
 
-        # Load all messages with their text_hash and content_tier
+        # Load all messages with their rowid, text_hash, and content_tier
         cursor = cache.conn.execute(
-            """SELECT uuid, session_id, workspace, timestamp, role, searchable_text,
+            """SELECT rowid, uuid, session_id, workspace, timestamp, role, searchable_text,
                       message_index, source, text_hash, content_tier
                FROM messages"""
         )
         rows = cursor.fetchall()
 
         if not rows:
-            # Check if embeddings exist — if so, the indexer just hasn't
-            # stored message metadata yet (still loading)
             emb_count = cache.embedding_count
             if emb_count > 0:
                 self._loading = True
@@ -101,23 +119,29 @@ class SearchIndex:
             self._embeddings = None
             self._metadata = []
             self._count = 0
-            # Don't set _last_refresh or _ever_loaded — allow retry on next call
+            self._capacity = 0
+            self._known_uuids = set()
+            self._max_rowid = 0
             return
 
         # Collect text hashes and load embeddings in batch
-        text_hashes = [row[8] for row in rows]
+        text_hashes = [row[9] for row in rows]
         embeddings_dict = cache.get_embeddings_batch(text_hashes)
 
         # Build parallel arrays (only for messages that have embeddings)
         metadata = []
         embedding_list = []
+        known_uuids = set()
+        max_rowid = 0
 
         for row in rows:
-            uuid, session_id, ws, ts, role, text, msg_idx, src, text_hash, content_tier = row
+            rowid, uuid, session_id, ws, ts, role, text, msg_idx, src, text_hash, content_tier = row
+            if rowid > max_rowid:
+                max_rowid = rowid
             emb = embeddings_dict.get(text_hash)
             if emb is None:
                 continue
-            # Skip embeddings with mismatched dimensions (corrupt or mixed-model data)
+            # Skip embeddings with mismatched dimensions
             if embedding_list and emb.shape[0] != embedding_list[0].shape[0]:
                 continue
             metadata.append({
@@ -132,28 +156,153 @@ class SearchIndex:
                 "content_tier": content_tier or "conversation",
             })
             embedding_list.append(emb)
+            known_uuids.add(uuid)
 
         if embedding_list:
             try:
-                self._embeddings = np.vstack(embedding_list)
+                stacked = np.vstack(embedding_list)
             except ValueError:
-                # Fallback: dimension mismatch despite filtering — clear and retry next cycle
                 self._embeddings = None
                 self._metadata = []
                 self._count = 0
+                self._capacity = 0
+                self._known_uuids = set()
+                self._max_rowid = 0
                 return
+            # Pre-allocate with headroom
+            count = stacked.shape[0]
+            dims = stacked.shape[1]
+            capacity = int(count * self._GROWTH_FACTOR)
+            self._embeddings = np.zeros((capacity, dims), dtype=np.float32)
+            self._embeddings[:count] = stacked
+            self._capacity = capacity
             self._metadata = metadata
-            self._count = len(metadata)
+            self._count = count
             self._loading = False
             self._ever_loaded = True
-            # Track oldest timestamp for recency boost calculation
+            self._known_uuids = known_uuids
+            self._max_rowid = max_rowid
             self._oldest_timestamp = min(m["timestamp"] for m in metadata) if metadata else 0
         else:
             self._embeddings = None
             self._metadata = []
             self._count = 0
+            self._capacity = 0
+            self._known_uuids = set()
+            self._max_rowid = 0
 
         self._last_refresh = time.time()
+
+    def _incremental_refresh(self):
+        """Incremental refresh: only load messages added since the last refresh.
+
+        Fills new rows into the pre-allocated matrix. Only reallocates when
+        capacity is exceeded, and does so with headroom to minimize future copies.
+        """
+        indexer = get_background_indexer()
+        cache = indexer.cache
+        if cache is None:
+            return
+
+        # Only fetch rows with rowid > our last seen max
+        cursor = cache.conn.execute(
+            """SELECT rowid, uuid, session_id, workspace, timestamp, role, searchable_text,
+                      message_index, source, text_hash, content_tier
+               FROM messages WHERE rowid > ?""",
+            (self._max_rowid,),
+        )
+        rows = cursor.fetchall()
+
+        if not rows:
+            # No new messages — just update the refresh timestamp
+            self._last_refresh = time.time()
+            return
+
+        # Collect text hashes for new rows
+        text_hashes = [row[9] for row in rows]
+        embeddings_dict = cache.get_embeddings_batch(text_hashes)
+
+        # Determine expected dimensions from existing matrix
+        expected_dims = self._embeddings.shape[1] if self._embeddings is not None else None
+
+        # Build new entries
+        new_metadata = []
+        new_embeddings = []
+        max_rowid = self._max_rowid
+
+        for row in rows:
+            rowid, uuid, session_id, ws, ts, role, text, msg_idx, src, text_hash, content_tier = row
+            if rowid > max_rowid:
+                max_rowid = rowid
+            # Skip if we already have this UUID (shouldn't happen, but defensive)
+            if uuid in self._known_uuids:
+                continue
+            emb = embeddings_dict.get(text_hash)
+            if emb is None:
+                continue
+            # Skip dimension mismatches
+            if expected_dims is not None and emb.shape[0] != expected_dims:
+                continue
+            if not new_embeddings and expected_dims is None:
+                expected_dims = emb.shape[0]
+            elif new_embeddings and emb.shape[0] != new_embeddings[0].shape[0]:
+                continue
+            new_metadata.append({
+                "uuid": uuid,
+                "session_id": session_id,
+                "workspace": ws,
+                "timestamp": ts,
+                "role": role,
+                "content": text[:2000] + "..." if len(text) > 2000 else text,
+                "message_index": msg_idx,
+                "source": src,
+                "content_tier": content_tier or "conversation",
+            })
+            new_embeddings.append(emb)
+            self._known_uuids.add(uuid)
+
+        self._max_rowid = max_rowid
+
+        if new_embeddings:
+            new_count = len(new_embeddings)
+            new_total = self._count + new_count
+
+            if self._embeddings is not None and new_total <= self._capacity:
+                # Fast path: fill into existing pre-allocated space (no copy)
+                new_matrix = np.vstack(new_embeddings)
+                self._embeddings[self._count:new_total] = new_matrix
+            elif self._embeddings is not None:
+                # Need to grow: allocate with headroom
+                new_matrix = np.vstack(new_embeddings)
+                dims = self._embeddings.shape[1]
+                new_capacity = int(new_total * self._GROWTH_FACTOR)
+                grown = np.zeros((new_capacity, dims), dtype=np.float32)
+                grown[:self._count] = self._embeddings[:self._count]
+                grown[self._count:new_total] = new_matrix
+                self._embeddings = grown
+                self._capacity = new_capacity
+            else:
+                # First data arriving via incremental (unusual but handle it)
+                new_matrix = np.vstack(new_embeddings)
+                capacity = int(new_count * self._GROWTH_FACTOR)
+                dims = new_matrix.shape[1]
+                self._embeddings = np.zeros((capacity, dims), dtype=np.float32)
+                self._embeddings[:new_count] = new_matrix
+                self._capacity = capacity
+
+            self._metadata.extend(new_metadata)
+            self._count = new_total
+            # Update oldest timestamp if any new messages are older
+            if new_metadata:
+                new_oldest = min(m["timestamp"] for m in new_metadata)
+                if self._oldest_timestamp == 0 or new_oldest < self._oldest_timestamp:
+                    self._oldest_timestamp = new_oldest
+
+        self._last_refresh = time.time()
+
+    def _refresh(self):
+        """Alias for _full_refresh (used by tests and invalidation paths)."""
+        self._full_refresh()
 
     def search(
         self,
@@ -177,8 +326,9 @@ class SearchIndex:
         if self._embeddings is None or self._count == 0:
             return []
 
-        # Compute all similarities at once
-        similarities = np.dot(self._embeddings, query_embedding)
+        # Compute similarities only against filled rows (not pre-allocated headroom)
+        active_embeddings = self._embeddings[:self._count]
+        similarities = np.dot(active_embeddings, query_embedding)
 
         # Build candidate mask for filtering
         mask = similarities >= threshold
@@ -250,6 +400,9 @@ def invalidate_search_index():
         _search_index._embeddings = None
         _search_index._metadata = []
         _search_index._count = 0
+        _search_index._capacity = 0
+        _search_index._known_uuids = set()
+        _search_index._max_rowid = 0
 
 
 def handle_search_request(request: dict) -> dict:
