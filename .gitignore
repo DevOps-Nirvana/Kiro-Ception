@@ -15,3 +15,5 @@ wheels/
 # IDE
 .idea/
 .vscode/
+
+old*
