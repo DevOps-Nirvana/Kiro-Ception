@@ -1,0 +1,65 @@
+{
+  "executionId": "exec-prompt-001",
+  "workflowType": "act",
+  "status": "completed",
+  "startTime": "2026-06-15T14:30:00.000Z",
+  "input": {
+    "data": {
+      "userPrompt": "I'm seeing intermittent connection timeouts in the authentication service.\nThe error happens about 20% of the time when users try to log in.\n\nCan you investigate the database connection pool settings and\nthe retry logic in src/auth/login.ts? I think the pool might be\nexhausted under load.\n\nAlso check if there are any recent changes to the connection\ntimeout configuration."
+    }
+  },
+  "autonomyMode": "autopilot",
+  "chatSessionId": "session-prompt-test-001",
+  "actions": [
+    {
+      "type": "action",
+      "executionId": "exec-prompt-001",
+      "actionId": "action-p-001",
+      "actionState": "completed",
+      "actionType": "readFile",
+      "input": {
+        "path": "/src/auth/login.ts"
+      },
+      "output": {
+        "filePath": "/src/auth/login.ts",
+        "content": "import { Pool } from 'pg';\n\nconst pool = new Pool({ max: 5 });\n\nexport async function login(user, pass) {\n  const client = await pool.connect();\n  // ... auth logic\n}"
+      },
+      "chatSessionId": "session-prompt-test-001",
+      "emittedAt": 1718458201000
+    },
+    {
+      "type": "action",
+      "executionId": "exec-prompt-001",
+      "actionId": "action-p-002",
+      "actionState": "completed",
+      "actionType": "readFile",
+      "input": {
+        "path": "/src/config/database.ts"
+      },
+      "output": {
+        "filePath": "/src/config/database.ts",
+        "content": "export const dbConfig = { connectionTimeout: 3000, max: 5 };"
+      },
+      "chatSessionId": "session-prompt-test-001",
+      "emittedAt": 1718458205000
+    },
+    {
+      "type": "action",
+      "executionId": "exec-prompt-001",
+      "actionId": "action-p-003",
+      "actionState": "completed",
+      "actionType": "say",
+      "input": {},
+      "output": {
+        "message": "I found the issue. Your connection pool is configured with `max: 5` connections, which is too low for concurrent login requests. Under 20% failure rate with typical traffic, this suggests pool exhaustion.\n\nHere's my recommendation:\n\n1. Increase pool size to 20 in `src/config/database.ts`\n2. Add connection retry logic with exponential backoff\n3. Add a connection timeout of 5000ms instead of the current 3000ms\n\nI'll make these changes now."
+      },
+      "chatSessionId": "session-prompt-test-001",
+      "emittedAt": 1718458230000
+    }
+  ],
+  "context": [],
+  "result": {},
+  "endTime": "2026-06-15T14:31:00.000Z",
+  "usageSummary": {},
+  "contextUsagePercentage": 12.3
+}

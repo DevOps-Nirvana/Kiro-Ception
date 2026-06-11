@@ -13,6 +13,13 @@ class Source(str, Enum):
     IDE = "ide"
 
 
+class ContentTier(str, Enum):
+    """Content classification for two-tier search model."""
+
+    CONVERSATION = "conversation"
+    TOOL_CONTEXT = "tool_context"
+
+
 class IndexedMessage(BaseModel):
     """A message indexed for search."""
 
@@ -24,6 +31,8 @@ class IndexedMessage(BaseModel):
     searchable_text: str
     message_index: int = 0  # Position in session for context retrieval
     source: Source = Source.CLI
+    content_tier: ContentTier = ContentTier.CONVERSATION
+    tool_name: str | None = None  # Populated only for tool_context messages
 
 
 class SessionInfo(BaseModel):

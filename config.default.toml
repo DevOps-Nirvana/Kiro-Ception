@@ -23,6 +23,13 @@ patterns = [
 # Backend: "sentence-transformers" (default, local) or "openai-compatible" (Ollama, LM Studio, OpenAI, etc.)
 backend = "sentence-transformers"
 model = "all-MiniLM-L6-v2"
+
+# Cache directory for all instance-local artifacts:
+# - Embedding database (cache_{fingerprint}.db)
+# - Leader lock file (leader.lock)
+# - Leader info file (leader.json)
+# Each unique cache_dir provides full instance isolation.
+# Use tilde (~) for home directory expansion.
 cache_dir = "~/.cache/kiro-ception"
 
 # OpenAI-compatible backend settings (only used when backend = "openai-compatible")
@@ -78,9 +85,9 @@ throttle_ms = 0
 rescan_interval_minutes = 10
 
 [server]
-# Localhost-only port for leader-follower inter-process communication
-# Only one instance (the leader) binds this port; followers connect to it
-# This and the leader-follower pattern is needed to prevent each process from having its own in-memory cache wasting resources
+# Localhost-only port for leader-follower inter-process communication.
+# Only one instance (the leader) binds this port; followers connect to it.
+# Each concurrent Kiro-Ception instance requires a unique leader_port value.
 leader_port = 19742
 
 # If true, delay leader election until the first tool call (legacy behavior).
@@ -117,3 +124,32 @@ timeout_seconds = 5
 # When true (and peers are enabled), exposes an extra MCP tool that searches
 # only remote peers without including local results. Requires Kiro restart.
 # debug_tool_enabled = true
+
+[tool_summaries]
+# Tool summary generation configuration
+# Controls how tool calls are summarized for the search index
+
+# Action types to skip entirely (not summarized or indexed as tool_context)
+# e.g., ["readFile", "list_directory"] to exclude noisy tools
+excluded_tools = []
+
+# Maximum length of a generated tool summary in characters
+max_summary_length = 800
+
+# Whether to include excerpts from meaningful tool output (build errors, test
+# failures, diagnostic findings) in the summary. When false, summaries contain
+# only the tool name, description, and outcome status.
+include_meaningful_output = true
+
+# --- Multi-Instance Example ---
+# To run a second Kiro-Ception instance (e.g., a fork or alternate version)
+# alongside the default, create a separate config file and set:
+#
+# [embedding]
+# cache_dir = "~/.cache/kiro-ception-alt"
+#
+# [server]
+# leader_port = 19743
+#
+# This gives the second instance its own embedding database, leader lock,
+# and leader info file with no file or port conflicts.

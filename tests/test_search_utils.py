@@ -315,3 +315,199 @@ class TestFormatSearchResponse:
             get_session_messages=lambda sid: [],
         )
         assert response["has_more"] is False
+
+
+# --- build_context_window with content_tier ---
+
+
+class TestBuildContextWindowContentTier:
+    """Tests for content_tier support in build_context_window."""
+
+    def _make_messages_with_tiers(self, count: int, tool_indices: list[int] | None = None) -> list[dict]:
+        """Helper to create messages with content_tier field.
+
+        Args:
+            count: Number of messages to create.
+            tool_indices: Indices that should be tool_context. Others are conversation.
+        """
+        import time
+        base_ts = time.time()
+        tool_indices = tool_indices or []
+        return [
+            {
+                "uuid": f"msg-{i}",
+                "role": "user" if i % 2 == 0 else "assistant",
+                "searchable_text": f"Message content {i}",
+                "timestamp": base_ts + i * 60,
+                "message_index": i,
+                "content_tier": "tool_context" if i in tool_indices else "conversation",
+            }
+            for i in range(count)
+        ]
+
+    def test_content_tier_included_in_output(self):
+        """Each context message includes a content_tier field."""
+        messages = self._make_messages_with_tiers(5)
+        context = build_context_window(messages, "msg-2", context_size=2)
+        assert len(context) == 5
+        for msg in context:
+            assert "content_tier" in msg
+            assert msg["content_tier"] == "conversation"
+
+    def test_content_tier_defaults_to_conversation(self):
+        """Messages without content_tier field default to 'conversation'."""
+        import time
+        messages = [
+            {
+                "uuid": "msg-0",
+                "role": "user",
+                "searchable_text": "Hello",
+                "timestamp": time.time(),
+                "message_index": 0,
+                # No content_tier field
+            }
+        ]
+        context = build_context_window(messages, "msg-0", context_size=0)
+        assert context[0]["content_tier"] == "conversation"
+
+    def test_tool_context_messages_interleaved(self):
+        """Both tiers interleaved by message_index order."""
+        messages = self._make_messages_with_tiers(7, tool_indices=[1, 3, 5])
+        context = build_context_window(messages, "msg-3", context_size=3)
+        # Window: msg-0 through msg-6 (all 7)
+        assert len(context) == 7
+        # Check interleaving: indices 1, 3, 5 are tool_context
+        assert context[0]["content_tier"] == "conversation"
+        assert context[1]["content_tier"] == "tool_context"
+        assert context[2]["content_tier"] == "conversation"
+        assert context[3]["content_tier"] == "tool_context"
+        assert context[4]["content_tier"] == "conversation"
+        assert context[5]["content_tier"] == "tool_context"
+        assert context[6]["content_tier"] == "conversation"
+
+    def test_both_tiers_count_toward_context_size(self):
+        """context_size counts both conversation and tool_context messages."""
+        messages = self._make_messages_with_tiers(10, tool_indices=[2, 3, 4, 5, 6, 7])
+        # Match at index 5, context_size=2 → indices 3, 4, 5, 6, 7
+        context = build_context_window(messages, "msg-5", context_size=2)
+        assert len(context) == 5
+
+    def test_overflow_logic_not_triggered_at_20(self):
+        """Exactly 20 messages should NOT trigger overflow logic."""
+        # Need exactly 20 messages in the window
+        messages = self._make_messages_with_tiers(20, tool_indices=[1, 3, 5, 7, 9, 11, 13, 15, 17, 19])
+        # context_size=10, match in middle → up to 21 messages but capped by list size
+        context = build_context_window(messages, "msg-10", context_size=10)
+        # With 20 messages, match at 10, context_size=10: start=0, end=20 → 20 messages
+        assert len(context) == 20
+        # All tool_context should still be present
+        tool_count = sum(1 for m in context if m["content_tier"] == "tool_context")
+        assert tool_count == 10
+
+    def test_overflow_logic_triggered_above_20(self):
+        """Window > 20 messages drops oldest tool_context first."""
+        # Create 25 messages with some as tool_context
+        messages = self._make_messages_with_tiers(25, tool_indices=[1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23])
+        # Match at 12, context_size=12 → window would be indices 0-24 (25 messages)
+        context = build_context_window(messages, "msg-12", context_size=12)
+        # Should be trimmed to 20
+        assert len(context) <= 20
+        # All conversation messages should be retained
+        conv_count = sum(1 for m in context if m["content_tier"] == "conversation")
+        # Original conversation messages in 0-24: indices 0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24 = 13
+        assert conv_count == 13
+        # The match should always be present
+        match_msgs = [m for m in context if m["is_match"]]
+        assert len(match_msgs) == 1
+
+    def test_overflow_drops_oldest_tool_context(self):
+        """Overflow drops oldest tool_context messages first (lowest indices)."""
+        import time
+        base_ts = time.time()
+        # Create 22 messages: 12 conversation, 10 tool_context
+        messages = []
+        for i in range(22):
+            tier = "tool_context" if i < 10 else "conversation"
+            messages.append({
+                "uuid": f"msg-{i}",
+                "role": "assistant",
+                "searchable_text": f"Content {i}",
+                "timestamp": base_ts + i * 60,
+                "message_index": i,
+                "content_tier": tier,
+            })
+        # Match at index 11 (conversation), context_size=11 → indices 0-21 (22 messages)
+        context = build_context_window(messages, "msg-11", context_size=11)
+        # Should trim to 20 by dropping 2 oldest tool_context (msg-0, msg-1)
+        assert len(context) == 20
+        # All 12 conversation messages retained
+        conv_count = sum(1 for m in context if m["content_tier"] == "conversation")
+        assert conv_count == 12
+        # 8 tool_context remaining (10 - 2 dropped)
+        tool_count = sum(1 for m in context if m["content_tier"] == "tool_context")
+        assert tool_count == 8
+
+    def test_overflow_retains_all_conversation(self):
+        """Even if window is large, all conversation messages are kept."""
+        import time
+        base_ts = time.time()
+        # Create 30 messages: 15 conversation interspersed with 15 tool_context
+        messages = []
+        for i in range(30):
+            tier = "tool_context" if i % 2 == 1 else "conversation"
+            messages.append({
+                "uuid": f"msg-{i}",
+                "role": "user" if i % 2 == 0 else "assistant",
+                "searchable_text": f"Content {i}",
+                "timestamp": base_ts + i * 60,
+                "message_index": i,
+                "content_tier": tier,
+            })
+        context = build_context_window(messages, "msg-14", context_size=15)
+        # Window: 0-29 (30 messages), overflow triggered → trim to 20
+        assert len(context) <= 20
+        # All 15 conversation messages should be retained
+        conv_count = sum(1 for m in context if m["content_tier"] == "conversation")
+        assert conv_count == 15
+
+    def test_overflow_with_match_as_tool_context(self):
+        """Matched message is never dropped, even if it's tool_context."""
+        import time
+        base_ts = time.time()
+        # Create 22 messages, all tool_context except the match
+        messages = []
+        for i in range(22):
+            messages.append({
+                "uuid": f"msg-{i}",
+                "role": "assistant",
+                "searchable_text": f"Content {i}",
+                "timestamp": base_ts + i * 60,
+                "message_index": i,
+                "content_tier": "tool_context",
+            })
+        # Match at index 11 which is tool_context
+        context = build_context_window(messages, "msg-11", context_size=11)
+        # Should trim to 20 but keep the matched message
+        assert len(context) <= 20
+        match_msgs = [m for m in context if m["is_match"]]
+        assert len(match_msgs) == 1
+
+    def test_messages_ordered_by_message_index_after_overflow(self):
+        """After overflow logic, messages remain in message_index order."""
+        import time
+        base_ts = time.time()
+        messages = []
+        for i in range(22):
+            tier = "tool_context" if i < 10 else "conversation"
+            messages.append({
+                "uuid": f"msg-{i}",
+                "role": "assistant",
+                "searchable_text": f"Content {i}",
+                "timestamp": base_ts + i * 60,
+                "message_index": i,
+                "content_tier": tier,
+            })
+        context = build_context_window(messages, "msg-11", context_size=11)
+        # Verify the timestamps are in increasing order (proxy for message_index order)
+        timestamps = [m["timestamp"] for m in context]
+        assert timestamps == sorted(timestamps)

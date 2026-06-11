@@ -7,15 +7,17 @@ schema changes. Migrations run sequentially and are tracked via the
 Version history:
 - 1: Baseline schema (embeddings, messages, session_state, execution_index, meta)
 - 2: Add FTS5 full-text search index on messages.searchable_text
+- 3: Add content_tier and tool_name columns for two-tier content model
 """
 
 import logging
 import sqlite3
+import time
 
 logger = logging.getLogger(__name__)
 
 # Current schema version — bump this when adding a new migration
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 
 
 def get_schema_version(conn: sqlite3.Connection) -> int:
@@ -57,6 +59,9 @@ def run_migrations(conn: sqlite3.Connection):
 
     if current < 2:
         _migrate_v1_to_v2(conn)
+
+    if current < 3:
+        _migrate_v2_to_v3(conn)
 
     # Record the final schema version
     conn.execute(
@@ -122,3 +127,77 @@ def _migrate_v1_to_v2(conn: sqlite3.Connection):
         logger.info("FTS5 index populated.")
     else:
         conn.commit()
+
+
+def _migrate_v2_to_v3(conn: sqlite3.Connection):
+    """Migration v2 → v3: Add content_tier and tool_name columns.
+
+    Adds columns for the two-tier content model:
+    - content_tier: classifies messages as 'conversation' or 'tool_context'
+    - tool_name: populated only for tool_context messages
+    - An index on content_tier for filtered queries
+
+    Handles "column already exists" gracefully and retries on database lock
+    with exponential backoff.
+    """
+    logger.info("Running migration v2 → v3: Adding content_tier and tool_name columns...")
+
+    _execute_with_retry(
+        conn,
+        "ALTER TABLE messages ADD COLUMN content_tier TEXT NOT NULL DEFAULT 'conversation'",
+        "content_tier column",
+    )
+
+    _execute_with_retry(
+        conn,
+        "ALTER TABLE messages ADD COLUMN tool_name TEXT",
+        "tool_name column",
+    )
+
+    _execute_with_retry(
+        conn,
+        "CREATE INDEX IF NOT EXISTS idx_messages_content_tier ON messages(content_tier)",
+        "content_tier index",
+    )
+
+    conn.commit()
+
+
+def _execute_with_retry(
+    conn: sqlite3.Connection, sql: str, description: str, max_attempts: int = 3
+):
+    """Execute a SQL statement with exponential backoff on database lock.
+
+    Gracefully handles "column already exists" errors by logging and skipping.
+    Retries up to max_attempts times on database lock with 1s/2s/4s delays.
+    """
+    for attempt in range(max_attempts):
+        try:
+            conn.execute(sql)
+            return
+        except sqlite3.OperationalError as e:
+            error_msg = str(e).lower()
+
+            # Column/index already exists — skip gracefully
+            if "duplicate column" in error_msg or "already exists" in error_msg:
+                logger.info(f"Skipping {description}: already exists")
+                return
+
+            # Database is locked — retry with exponential backoff
+            if "database is locked" in error_msg:
+                delay = 2**attempt  # 1s, 2s, 4s
+                if attempt < max_attempts - 1:
+                    logger.warning(
+                        f"Database locked while adding {description}, "
+                        f"retrying in {delay}s (attempt {attempt + 1}/{max_attempts})"
+                    )
+                    time.sleep(delay)
+                else:
+                    logger.error(
+                        f"Database locked after {max_attempts} attempts "
+                        f"while adding {description}"
+                    )
+                    raise
+            else:
+                # Unexpected error — re-raise
+                raise

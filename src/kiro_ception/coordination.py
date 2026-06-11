@@ -3,15 +3,25 @@
 Only one process (the leader) holds embeddings in RAM and runs the indexer.
 All other processes (followers) forward requests to the leader via localhost HTTP.
 Automatic failover: if the leader dies, a follower promotes itself.
+
+Zombie handling: if the leader process is alive but its HTTP server is dead,
+the successor will kill it by PID to release the file lock, then take over.
+On Windows, file locks cannot be removed by another process — the holder must die.
 """
 
+import ctypes
+import errno
 import json
 import logging
 import os
+import random
+import signal
 import socket
+import sys
+import tempfile
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from filelock import FileLock, Timeout
@@ -182,11 +192,27 @@ def _get_leader_info_path() -> Path:
 
 
 def _write_leader_info(port: int, pid: int):
-    """Write leader info to disk so followers can find it."""
+    """Write leader info to disk atomically so followers can find it.
+
+    Uses write-to-temp + rename to avoid partial-write corruption if the
+    process crashes mid-write or the disk fills up.
+    """
     info_path = _get_leader_info_path()
     info = {"port": port, "pid": pid, "started_at": time.time()}
-    with open(info_path, "w") as f:
-        json.dump(info, f)
+    dir_path = info_path.parent
+    fd, tmp_path = tempfile.mkstemp(dir=str(dir_path), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(info, f)
+            f.flush()
+            os.fsync(f.fileno())
+        Path(tmp_path).replace(info_path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def _read_leader_info() -> dict | None:
@@ -206,6 +232,113 @@ def _is_port_open(port: int) -> bool:
             return True
     except (ConnectionRefusedError, OSError, TimeoutError):
         return False
+
+
+def _is_pid_alive(pid: int) -> bool:
+    """Check if a process with the given PID exists.
+
+    Uses os.kill(pid, 0) on Unix, OpenProcess on Windows.
+    """
+    if pid <= 0:
+        return False
+
+    if sys.platform == "win32":
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = ctypes.windll.kernel32.OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+        )
+        if handle:
+            ctypes.windll.kernel32.CloseHandle(handle)
+            return True
+        return False
+    else:
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError as e:
+            if e.errno == errno.EPERM:
+                return True  # exists but no permission
+            return False
+
+
+def _is_leader_healthy(port: int, pid: int, retries: int = 2) -> bool:
+    """Check if the leader is both alive AND serving HTTP.
+
+    A process that holds the lock but doesn't respond to HTTP /health
+    is a zombie and must be killed.
+
+    Retries the health check to avoid false-positive kills when the leader's
+    HTTP thread is momentarily busy (e.g., serving a large search request).
+    """
+    if not _is_pid_alive(pid):
+        return False
+
+    import urllib.request
+
+    for attempt in range(retries):
+        try:
+            url = f"http://127.0.0.1:{port}/health"
+            req = urllib.request.Request(url, method="GET")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+                if body.get("status") == "ok":
+                    return True
+        except Exception as e:
+            logger.debug(
+                f"Health check attempt {attempt + 1}/{retries} failed for "
+                f"port={port} pid={pid}: {type(e).__name__}: {e}"
+            )
+        if attempt < retries - 1:
+            time.sleep(1)
+
+    return False
+
+
+def _kill_process(pid: int) -> bool:
+    """Forcefully kill a process by PID. Returns True if killed or already dead."""
+    if pid <= 0:
+        return False
+    if pid == os.getpid():
+        # Never kill ourselves
+        return False
+
+    logger.warning(f"Killing zombie leader process (pid={pid})")
+
+    if sys.platform == "win32":
+        PROCESS_TERMINATE = 0x0001
+        handle = ctypes.windll.kernel32.OpenProcess(PROCESS_TERMINATE, False, pid)
+        if handle:
+            result = ctypes.windll.kernel32.TerminateProcess(handle, 1)
+            ctypes.windll.kernel32.CloseHandle(handle)
+            if result:
+                logger.info(f"Successfully terminated zombie pid={pid}")
+                return True
+            else:
+                logger.error(f"TerminateProcess failed for pid={pid}")
+                return False
+        else:
+            # Can't open — might already be dead
+            return not _is_pid_alive(pid)
+    else:
+        try:
+            os.kill(pid, signal.SIGKILL)
+            logger.info(f"Sent SIGKILL to zombie pid={pid}")
+            return True
+        except ProcessLookupError:
+            return True  # already dead
+        except PermissionError:
+            logger.error(f"Permission denied killing pid={pid}")
+            return False
+
+
+def _wait_for_pid_death(pid: int, timeout: float = 5.0) -> bool:
+    """Wait for a process to die after being killed. Returns True if dead."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not _is_pid_alive(pid):
+            return True
+        time.sleep(0.2)
+    return not _is_pid_alive(pid)
 
 
 class LeaderInstance:
@@ -245,12 +378,15 @@ class LeaderInstance:
             self._is_leader = False
             return False
 
-    def start_http_server(self, search_handler):
+    def start_http_server(self, search_handler) -> bool:
         """Start the localhost HTTP API server in a background thread.
 
         Args:
             search_handler: Callable that handles search requests.
                            Signature: search_handler(request_dict) -> response_dict
+
+        Returns:
+            True if the HTTP server started and is responding to /health.
         """
         self._search_handler = search_handler
         leader_instance = self
@@ -381,13 +517,21 @@ class LeaderInstance:
                             status["fts_enabled"] = False
                         status["uptime_seconds"] = round(time.time() - _process_start_time, 1)
                         # Process memory usage
-                        import resource
-                        import platform as _platform
-                        mem_bytes = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-                        if _platform.system() == "Darwin":
-                            mem_mb = mem_bytes / (1024 * 1024)
-                        else:
-                            mem_mb = mem_bytes / 1024
+                        try:
+                            import resource
+                            import platform as _platform
+                            mem_bytes = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+                            if _platform.system() == "Darwin":
+                                mem_mb = mem_bytes / (1024 * 1024)
+                            else:
+                                mem_mb = mem_bytes / 1024
+                        except ImportError:
+                            # Windows: use psutil or fallback
+                            try:
+                                import psutil
+                                mem_mb = psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
+                            except ImportError:
+                                mem_mb = 0.0
                         status["memory_used_mb"] = round(mem_mb, 1)
                         from .memory import get_memory_limit
                         memory_limit = get_memory_limit()
@@ -429,7 +573,7 @@ class LeaderInstance:
                 self.wfile.write(html.encode("utf-8"))
 
         try:
-            self._http_server = HTTPServer(("127.0.0.1", self._port), RequestHandler)
+            self._http_server = ThreadingHTTPServer(("127.0.0.1", self._port), RequestHandler)
             self._http_server.timeout = 1
             self._http_thread = threading.Thread(
                 target=self._http_server.serve_forever,
@@ -443,7 +587,7 @@ class LeaderInstance:
             # Try next port
             self._port += 1
             try:
-                self._http_server = HTTPServer(("127.0.0.1", self._port), RequestHandler)
+                self._http_server = ThreadingHTTPServer(("127.0.0.1", self._port), RequestHandler)
                 self._http_server.timeout = 1
                 self._http_thread = threading.Thread(
                     target=self._http_server.serve_forever,
@@ -455,6 +599,35 @@ class LeaderInstance:
                 logger.info(f"Leader HTTP server started on 127.0.0.1:{self._port} (fallback port)")
             except OSError as e2:
                 logger.error(f"Failed to start leader HTTP on fallback port {self._port}: {e2}")
+
+        # Verify the server is actually responding.
+        # Use a simple socket connect first (faster than HTTP) to detect when
+        # the thread has bound and is accepting, then do the full /health check.
+        started = False
+        for _wait in range(20):  # up to ~2 seconds
+            time.sleep(0.1)
+            if _is_port_open(self._port):
+                started = True
+                break
+
+        if not started:
+            logger.error(
+                f"Leader HTTP server not accepting connections on port "
+                f"{self._port} after 2s — server failed to start"
+            )
+            self.release_leadership()
+            return False
+
+        # Port is open — now verify full /health response
+        if not _is_leader_healthy(self._port, os.getpid()):
+            logger.error(
+                f"Leader HTTP server on port {self._port} accepts connections "
+                f"but /health check failed — handler may be broken"
+            )
+            self.release_leadership()
+            return False
+
+        return True
 
     def release_leadership(self):
         """Release the leader lock and stop HTTP server."""
@@ -504,11 +677,15 @@ class FollowerInstance:
         return f"http://127.0.0.1:{port}"
 
     def is_leader_alive(self) -> bool:
-        """Check if the leader is responding."""
-        port = self.leader_port
-        if port is None:
+        """Check if the leader is responding AND its PID is alive."""
+        info = _read_leader_info()
+        if not info:
             return False
-        return _is_port_open(port)
+        port = info.get("port")
+        pid = info.get("pid")
+        if port is None or pid is None:
+            return False
+        return _is_leader_healthy(port, pid)
 
     def search(self, request: dict) -> dict:
         """Forward a search request to the leader."""
@@ -565,15 +742,27 @@ class InstanceManager:
 
     Handles initial role assignment, automatic failover, and periodic
     heartbeat checks for leader liveness.
+
+    Zombie handling: if the current leader holds the file lock but its HTTP
+    server is dead, this manager will kill it by PID to release the lock,
+    then attempt to take over leadership. If 3 consecutive leader spawns
+    fail health checks, gives up and stays in follower mode permanently.
     """
+
+    MAX_SPAWN_ATTEMPTS = 3
+    SPAWN_DEBOUNCE_SECONDS = 2.0
+    DEGRADED_RETRY_INTERVAL = 300  # 5 minutes before retrying from degraded state
 
     def __init__(self):
         self._leader: LeaderInstance | None = None
         self._follower: FollowerInstance | None = None
-        self._role: str = "undecided"  # "leader" | "follower" | "undecided"
+        self._role: str = "undecided"  # "leader" | "follower" | "undecided" | "degraded"
         self._lock = threading.Lock()
         self._search_handler = None  # Stored for use during promotion
         self._heartbeat_thread: threading.Thread | None = None
+        self._spawn_failures: int = 0  # Consecutive failed leader spawns
+        self._permanently_degraded: bool = False  # True = stop trying to become leader
+        self._degraded_since: float | None = None  # When we entered degraded state
 
     @property
     def role(self) -> str:
@@ -591,72 +780,229 @@ class InstanceManager:
     def follower_instance(self) -> FollowerInstance | None:
         return self._follower
 
+    def _kill_zombie_leader(self) -> bool:
+        """Kill the zombie leader process identified in leader.json.
+
+        Returns True if the zombie was killed (or was already dead) and
+        the lock file is now available for acquisition.
+        """
+        leader_info = _read_leader_info()
+        if not leader_info:
+            return True  # No leader info — nothing to kill
+
+        pid = leader_info.get("pid")
+        if not pid or pid == os.getpid():
+            return True  # No PID or it's us
+
+        if not _is_pid_alive(pid):
+            logger.info(f"Zombie leader pid={pid} already dead")
+            # Try to clean up the lock file
+            try:
+                _get_lock_path().unlink(missing_ok=True)
+            except OSError:
+                pass
+            return True
+
+        # PID is alive but HTTP is dead — it's a zombie. Kill it.
+        killed = _kill_process(pid)
+        if not killed:
+            logger.error(f"Failed to kill zombie leader pid={pid}")
+            return False
+
+        # Wait for it to actually die so the OS releases the file lock
+        if not _wait_for_pid_death(pid, timeout=5.0):
+            logger.error(
+                f"Zombie leader pid={pid} did not die within timeout "
+                f"after kill signal"
+            )
+            return False
+
+        # Now try to remove the stale lock file
+        try:
+            _get_lock_path().unlink(missing_ok=True)
+        except OSError:
+            pass  # May already be gone
+
+        return True
+
+    def _try_become_leader(self, search_handler) -> bool:
+        """Single attempt to acquire leadership and start HTTP server.
+
+        Returns True only if leadership is acquired AND the HTTP server
+        passes health check. On failure, releases any acquired lock.
+        """
+        leader = LeaderInstance()
+        if not leader.try_acquire_leadership():
+            return False
+
+        # Acquired the lock — now start the HTTP server and verify health
+        server_ok = leader.start_http_server(search_handler)
+        if not server_ok:
+            logger.error(
+                "Acquired leadership but HTTP server failed health check — "
+                "releasing lock"
+            )
+            leader.release_leadership()
+            return False
+
+        # Success
+        self._leader = leader
+        self._follower = None
+        self._role = "leader"
+        self._spawn_failures = 0
+        return True
+
     def initialize(self, search_handler) -> str:
         """Determine role and set up accordingly.
+
+        Attempts to become leader. If an existing leader is healthy, becomes
+        follower. If the existing leader is a zombie, kills it and takes over.
+        If our own HTTP server fails to start 3 times, enters degraded follower
+        mode and logs clearly that it cannot serve with the current config.
 
         Args:
             search_handler: The search function to serve if this becomes leader.
 
         Returns:
-            "leader" or "follower"
+            "leader", "follower", or "degraded"
         """
         self._search_handler = search_handler
+
         with self._lock:
-            leader = LeaderInstance()
-            if leader.try_acquire_leadership():
-                self._leader = leader
-                self._role = "leader"
-                leader.start_http_server(search_handler)
+            # Fast path: try to grab leadership directly
+            if self._try_become_leader(search_handler):
                 return "leader"
-            else:
-                # Check if the existing leader is actually alive
-                follower = FollowerInstance()
-                if follower.is_leader_alive():
-                    self._follower = follower
+
+            # Couldn't get the lock. Check if existing leader is healthy.
+            leader_info = _read_leader_info()
+            if leader_info:
+                port = leader_info.get("port")
+                pid = leader_info.get("pid")
+                if port and pid and _is_leader_healthy(port, pid):
+                    # Healthy leader exists — become follower
+                    self._follower = FollowerInstance()
                     self._role = "follower"
                     return "follower"
-                else:
-                    # Leader is dead, force acquire
-                    logger.warning("Stored leader is unresponsive, forcing lock acquisition")
-                    lock_path = _get_lock_path()
-                    # Remove stale lock and retry
-                    try:
-                        lock_path.unlink(missing_ok=True)
-                    except OSError:
-                        pass
-                    leader2 = LeaderInstance()
-                    if leader2.try_acquire_leadership():
-                        self._leader = leader2
-                        self._role = "leader"
-                        leader2.start_http_server(search_handler)
+
+            # Leader is unhealthy (zombie or dead). Kill it and retry.
+            logger.warning(
+                "Existing leader is unresponsive — killing zombie and "
+                "attempting takeover"
+            )
+
+            for attempt in range(self.MAX_SPAWN_ATTEMPTS):
+                if self._kill_zombie_leader():
+                    time.sleep(0.5)  # Brief pause for OS to release handles
+
+                    if self._try_become_leader(search_handler):
                         return "leader"
-                    else:
-                        # Another process beat us to it
+
+                # Check if another process took over while we waited
+                leader_info = _read_leader_info()
+                if leader_info:
+                    port = leader_info.get("port")
+                    pid = leader_info.get("pid")
+                    if port and pid and _is_leader_healthy(port, pid):
+                        logger.info(
+                            "Another process became healthy leader during our "
+                            "takeover attempt — becoming follower"
+                        )
                         self._follower = FollowerInstance()
                         self._role = "follower"
                         return "follower"
 
+                self._spawn_failures += 1
+                logger.warning(
+                    f"Leader spawn attempt {attempt + 1}/{self.MAX_SPAWN_ATTEMPTS} "
+                    f"failed (total failures: {self._spawn_failures})"
+                )
+
+                if attempt < self.MAX_SPAWN_ATTEMPTS - 1:
+                    time.sleep(self.SPAWN_DEBOUNCE_SECONDS)
+
+            # All attempts exhausted
+            self._permanently_degraded = True
+            self._degraded_since = time.time()
+            self._role = "degraded"
+            logger.error(
+                "UNABLE TO START LEADER SERVICE: all %d spawn attempts failed. "
+                "Falling back to degraded follower mode. The HTTP server cannot "
+                "start with the current configuration (port=%s). Check for port "
+                "conflicts or other processes holding resources.",
+                self.MAX_SPAWN_ATTEMPTS,
+                get_config().server.leader_port,
+            )
+            # Still set up as follower in case another instance manages to lead
+            self._follower = FollowerInstance()
+            return "degraded"
+
     def promote_to_leader(self, search_handler) -> bool:
         """Attempt to promote this follower to leader (failover).
 
+        If the current leader is a zombie (alive but not serving HTTP),
+        kills it first. If our own server fails to start after killing
+        the zombie, counts toward the spawn failure limit.
+
         Returns True if promotion succeeded.
         """
-        with self._lock:
-            leader = LeaderInstance()
-            # Try to remove stale lock first
-            lock_path = _get_lock_path()
-            try:
-                lock_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+        if self._permanently_degraded:
+            logger.debug(
+                "Skipping promotion attempt — permanently degraded"
+            )
+            return False
 
-            if leader.try_acquire_leadership():
-                self._leader = leader
-                self._follower = None
-                self._role = "leader"
-                leader.start_http_server(search_handler)
+        with self._lock:
+            # Try direct acquisition (leader might have exited cleanly and
+            # the OS released the file lock). Do NOT unlink the lock file —
+            # that creates a TOCTOU race with other followers also promoting.
+            # FileLock handles stale files correctly on its own.
+            if self._try_become_leader(search_handler):
                 logger.info("Promoted to leader after failover")
                 return True
+
+            # Direct acquisition failed — zombie is holding the lock.
+            # Kill it.
+            if not self._kill_zombie_leader():
+                self._spawn_failures += 1
+                if self._spawn_failures >= self.MAX_SPAWN_ATTEMPTS:
+                    self._permanently_degraded = True
+                    self._degraded_since = time.time()
+                    self._role = "degraded"
+                    logger.error(
+                        "PROMOTION PERMANENTLY FAILED: unable to kill zombie "
+                        "leader after %d attempts. Entering degraded mode. "
+                        "Manual intervention required.",
+                        self._spawn_failures,
+                    )
+                return False
+
+            # Zombie killed — wait briefly for OS cleanup, then try again
+            time.sleep(0.5)
+
+            if self._try_become_leader(search_handler):
+                logger.info(
+                    "Promoted to leader after killing zombie (pid from leader.json)"
+                )
+                return True
+
+            # Even after killing zombie, we couldn't start. Count it.
+            self._spawn_failures += 1
+            if self._spawn_failures >= self.MAX_SPAWN_ATTEMPTS:
+                self._permanently_degraded = True
+                self._degraded_since = time.time()
+                self._role = "degraded"
+                logger.error(
+                    "PROMOTION PERMANENTLY FAILED: acquired lock but HTTP server "
+                    "will not start after %d consecutive failures. Entering "
+                    "degraded mode. Check port %s and current config.",
+                    self._spawn_failures,
+                    get_config().server.leader_port,
+                )
+            else:
+                logger.warning(
+                    f"Promotion failed (spawn failure {self._spawn_failures}/"
+                    f"{self.MAX_SPAWN_ATTEMPTS}) — will retry on next heartbeat"
+                )
             return False
 
     def get_role_info(self) -> dict:
@@ -664,10 +1010,12 @@ class InstanceManager:
         info = {
             "role": self._role,
             "pid": os.getpid(),
+            "degraded": self._permanently_degraded,
+            "spawn_failures": self._spawn_failures,
         }
         if self._role == "leader" and self._leader:
             info["port"] = self._leader.port
-        elif self._role == "follower":
+        elif self._role in ("follower", "degraded"):
             leader_info = _read_leader_info()
             if leader_info:
                 info["leader_port"] = leader_info.get("port")
@@ -680,6 +1028,7 @@ class InstanceManager:
         - Leader: periodically updates leader.json with a fresh timestamp.
         - Follower: periodically checks if the leader is alive. If dead,
           attempts promotion to leader.
+        - Degraded: does nothing (gave up).
         """
         if self._heartbeat_thread and self._heartbeat_thread.is_alive():
             return
@@ -689,13 +1038,46 @@ class InstanceManager:
         self._heartbeat_thread.start()
 
     def _heartbeat_loop(self):
-        """Periodic heartbeat: leader writes timestamp, follower checks liveness."""
+        """Periodic heartbeat: leader writes timestamp, follower checks liveness.
+
+        Adds ±25% jitter to prevent synchronized detection across multiple
+        followers (thundering herd on leader death).
+        """
         config = get_config()
-        interval = config.server.heartbeat_interval_seconds
+        base_interval = config.server.heartbeat_interval_seconds
 
         while True:
-            time.sleep(interval)
+            # Jitter prevents all followers from detecting death simultaneously
+            jitter = base_interval * 0.25 * (2 * random.random() - 1)
+            time.sleep(base_interval + jitter)
             try:
+                if self._permanently_degraded:
+                    # Retry from degraded state after the retry interval expires
+                    if (
+                        self._degraded_since
+                        and (time.time() - self._degraded_since)
+                        > self.DEGRADED_RETRY_INTERVAL
+                    ):
+                        logger.info(
+                            "Retrying leader election from degraded state "
+                            f"(degraded for {int(time.time() - self._degraded_since)}s)"
+                        )
+                        self._spawn_failures = 0
+                        self._permanently_degraded = False
+                        self._degraded_since = None
+                        if self.promote_to_leader(self._search_handler):
+                            from .background_indexer import get_background_indexer
+                            indexer = get_background_indexer()
+                            indexer.start()
+                            from .search import get_search_index
+                            get_search_index()
+                        else:
+                            logger.info(
+                                "Degraded retry failed; will try again in "
+                                f"{self.DEGRADED_RETRY_INTERVAL}s"
+                            )
+                    continue
+
                 if self.is_leader:
                     # Leader: refresh the timestamp in leader.json
                     if self._leader:
@@ -703,6 +1085,21 @@ class InstanceManager:
                 else:
                     # Follower: check if leader is still alive
                     if self._follower and not self._follower.is_leader_alive():
+                        # Before attempting promotion, check if another follower
+                        # already won the election (avoids counting a lost race
+                        # as a spawn failure).
+                        leader_info = _read_leader_info()
+                        if leader_info:
+                            lport = leader_info.get("port")
+                            lpid = leader_info.get("pid")
+                            if lport and lpid and _is_leader_healthy(lport, lpid):
+                                logger.info(
+                                    "Heartbeat: another process became leader "
+                                    "— staying as follower"
+                                )
+                                self._follower._refresh_leader_port()
+                                continue
+
                         logger.info("Heartbeat: leader appears dead, attempting promotion")
                         if self.promote_to_leader(self._search_handler):
                             # Successfully promoted — start the indexer
@@ -711,6 +1108,11 @@ class InstanceManager:
                             indexer.start()
                             from .search import get_search_index
                             get_search_index()
+                        else:
+                            logger.info(
+                                "Heartbeat: promotion failed; will retry on "
+                                "next heartbeat cycle"
+                            )
             except Exception as e:
                 logger.debug(f"Heartbeat error: {e}")
 

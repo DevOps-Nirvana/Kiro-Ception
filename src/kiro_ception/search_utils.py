@@ -84,11 +84,18 @@ def build_context_window(
     Args:
         session_messages: All messages in the session, ordered by message_index.
             Each dict must have keys: uuid, role, searchable_text, timestamp.
+            May include content_tier field (defaults to "conversation").
         match_uuid: The UUID of the matched message.
         context_size: Number of messages before and after the match to include.
+            Both conversation and tool_context messages count toward this limit.
 
     Returns:
-        List of context message dicts with role, content, timestamp, is_match.
+        List of context message dicts with role, content, content_tier,
+        timestamp, is_match. Messages are interleaved by message_index order.
+
+    Overflow logic:
+        When the window exceeds 20 messages, drop oldest tool_context messages
+        first while retaining all conversation messages.
     """
     if not session_messages:
         return []
@@ -105,16 +112,73 @@ def build_context_window(
     start = max(0, match_pos - context_size)
     end = min(len(session_messages), match_pos + context_size + 1)
 
+    window_messages = session_messages[start:end]
+
+    # Apply overflow logic: when window exceeds 20 messages,
+    # drop oldest tool_context first, retain all conversation messages
+    if len(window_messages) > 20:
+        window_messages = _apply_overflow_logic(window_messages, match_uuid)
+
     context = []
-    for msg in session_messages[start:end]:
+    for msg in window_messages:
         text = msg["searchable_text"]
+        content_tier = msg.get("content_tier", "conversation")
         context.append({
             "role": msg["role"],
             "content": truncate_content(text),
+            "content_tier": content_tier,
             "timestamp": datetime.fromtimestamp(msg["timestamp"]).isoformat(),
             "is_match": msg["uuid"] == match_uuid,
         })
     return context
+
+
+def _apply_overflow_logic(window_messages: list[dict], match_uuid: str) -> list[dict]:
+    """Apply overflow logic to trim window to 20 messages.
+
+    Drops oldest tool_context messages first while retaining all
+    conversation messages. The matched message is never dropped.
+
+    Args:
+        window_messages: Messages in the window, ordered by message_index.
+        match_uuid: UUID of the matched message (never dropped).
+
+    Returns:
+        Trimmed list of messages, still ordered by message_index.
+    """
+    max_window = 20
+
+    if len(window_messages) <= max_window:
+        return window_messages
+
+    # Separate messages into:
+    # - protected: conversation messages + the matched message (never dropped)
+    # - droppable: tool_context messages that are NOT the match
+    protected_msgs = []
+    droppable_tool_msgs = []
+
+    for msg in window_messages:
+        tier = msg.get("content_tier", "conversation")
+        if tier == "tool_context" and msg["uuid"] != match_uuid:
+            droppable_tool_msgs.append(msg)
+        else:
+            protected_msgs.append(msg)
+
+    # Calculate how many tool_context messages we need to drop
+    num_to_drop = len(window_messages) - max_window
+    # Drop oldest tool_context first (they're already in message_index order)
+    if num_to_drop < len(droppable_tool_msgs):
+        kept_tool_msgs = droppable_tool_msgs[num_to_drop:]
+    else:
+        # Not enough droppable tool_context — keep all protected messages
+        # (window may still exceed 20 if there are >20 protected messages)
+        kept_tool_msgs = []
+
+    result = protected_msgs + kept_tool_msgs
+    # Re-sort by original message_index order
+    result.sort(key=lambda m: m.get("message_index", 0))
+
+    return result
 
 
 def format_search_response(

@@ -199,36 +199,58 @@ class EmbeddingCache:
 
     def put_message(self, uuid: str, session_id: str, workspace: str,
                     timestamp: float, role: str, searchable_text: str,
-                    message_index: int, source: str, text_hash: str):
+                    message_index: int, source: str, text_hash: str,
+                    content_tier: str = "conversation", tool_name: str | None = None):
         """Store message metadata."""
         self.conn.execute(
             """INSERT OR REPLACE INTO messages
-               (uuid, session_id, workspace, timestamp, role, searchable_text, message_index, source, text_hash)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (uuid, session_id, workspace, timestamp, role, searchable_text, message_index, source, text_hash),
+               (uuid, session_id, workspace, timestamp, role, searchable_text,
+                message_index, source, text_hash, content_tier, tool_name)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (uuid, session_id, workspace, timestamp, role, searchable_text,
+             message_index, source, text_hash, content_tier, tool_name),
         )
 
     def put_messages_batch(self, messages: list[tuple]):
         """Store multiple message metadata in a single transaction.
 
-        Each tuple: (uuid, session_id, workspace, timestamp, role, searchable_text, message_index, source, text_hash)
+        Each tuple: (uuid, session_id, workspace, timestamp, role, searchable_text,
+                     message_index, source, text_hash, content_tier, tool_name)
+
+        For backward compatibility, tuples with 9 elements (without content_tier
+        and tool_name) are also accepted — they default to 'conversation' tier
+        with no tool_name.
         """
+        # Normalize tuples to 11 elements for the INSERT
+        normalized = []
+        for msg in messages:
+            if len(msg) == 9:
+                normalized.append(msg + ("conversation", None))
+            else:
+                normalized.append(msg)
+
         self.conn.executemany(
             """INSERT OR REPLACE INTO messages
-               (uuid, session_id, workspace, timestamp, role, searchable_text, message_index, source, text_hash)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            messages,
+               (uuid, session_id, workspace, timestamp, role, searchable_text,
+                message_index, source, text_hash, content_tier, tool_name)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            normalized,
         )
         self.conn.commit()
 
     def get_session_messages(self, session_id: str) -> list[dict]:
         """Get all messages for a session, sorted by message_index."""
         cursor = self.conn.execute(
-            """SELECT uuid, session_id, workspace, timestamp, role, searchable_text, message_index, source, text_hash
+            """SELECT uuid, session_id, workspace, timestamp, role, searchable_text,
+                      message_index, source, text_hash, content_tier, tool_name
                FROM messages WHERE session_id = ? ORDER BY message_index""",
             (session_id,),
         )
-        cols = ["uuid", "session_id", "workspace", "timestamp", "role", "searchable_text", "message_index", "source", "text_hash"]
+        cols = [
+            "uuid", "session_id", "workspace", "timestamp", "role",
+            "searchable_text", "message_index", "source", "text_hash",
+            "content_tier", "tool_name",
+        ]
         return [dict(zip(cols, row)) for row in cursor]
 
     def delete_session_messages(self, session_id: str):
@@ -250,11 +272,16 @@ class EmbeddingCache:
         after_ts: float | None = None,
         before_ts: float | None = None,
         limit: int = 100,
+        include_tool_context: bool = False,
     ) -> list[dict]:
         """Full-text search using FTS5 with BM25 ranking.
 
         Returns results sorted by BM25 relevance score (negative values,
         more negative = more relevant). Applies workspace/source/date filters.
+
+        When include_tool_context is False (default), only matches against
+        content_tier='conversation' messages. When True, also matches against
+        'tool_context' messages.
 
         Returns list of dicts with keys matching the messages table columns
         plus a 'fts_score' key (normalized to 0-1 range, higher = better).
@@ -282,6 +309,11 @@ class EmbeddingCache:
             conditions.append("m.timestamp < ?")
             params.append(before_ts)
 
+        # Content tier filtering: default to conversation only
+        if not include_tool_context:
+            conditions.append("m.content_tier = ?")
+            params.append("conversation")
+
         where_clause = ""
         if conditions:
             where_clause = "AND " + " AND ".join(conditions)
@@ -292,7 +324,7 @@ class EmbeddingCache:
         sql = f"""
             SELECT m.uuid, m.session_id, m.workspace, m.timestamp, m.role,
                    m.searchable_text, m.message_index, m.source,
-                   rank AS fts_rank
+                   rank AS fts_rank, m.content_tier, m.tool_name
             FROM messages_fts
             JOIN messages m ON messages_fts.rowid = m.rowid
             WHERE messages_fts MATCH ?
@@ -321,10 +353,10 @@ class EmbeddingCache:
 
         results = []
         for row in rows:
-            uuid, session_id, ws, ts, role, text, msg_idx, src, fts_rank = row
+            uuid, session_id, ws, ts, role, text, msg_idx, src, fts_rank, content_tier, tool_name = row
             # Normalize: best match → 1.0, worst match → ~0.1
             normalized_score = 1.0 - ((fts_rank - best_score) / score_range) * 0.9
-            results.append({
+            result = {
                 "uuid": uuid,
                 "session_id": session_id,
                 "workspace": ws,
@@ -334,7 +366,11 @@ class EmbeddingCache:
                 "message_index": msg_idx,
                 "source": src,
                 "score": normalized_score,
-            })
+                "content_tier": content_tier,
+            }
+            if tool_name is not None:
+                result["tool_name"] = tool_name
+            results.append(result)
 
         return results
 

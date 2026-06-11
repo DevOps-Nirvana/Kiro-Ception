@@ -198,8 +198,8 @@ class TestInstanceManager:
         leader_manager.initialize(search_handler=MagicMock())
         assert leader_manager.is_leader is True
 
-        # Second instance — lock is held, port is open, should become follower
-        with patch("kiro_ception.coordination._is_port_open", return_value=True):
+        # Second instance — lock is held, leader is healthy, should become follower
+        with patch("kiro_ception.coordination._is_leader_healthy", return_value=True):
             follower_manager = InstanceManager()
             role = follower_manager.initialize(search_handler=MagicMock())
 

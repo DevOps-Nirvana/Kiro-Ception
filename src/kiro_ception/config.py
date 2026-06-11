@@ -10,6 +10,24 @@ CONFIG_DIR = Path.home() / ".config" / "kiro-ception"
 CONFIG_FILE = CONFIG_DIR / "config.toml"
 DEFAULT_CONFIG = Path(__file__).parent.parent.parent / "config.default.toml"
 
+# Override config file path (set via --config CLI argument)
+_config_file_override: Path | None = None
+
+
+def set_config_file(path: str | Path) -> None:
+    """Override the config file path. Must be called before get_config()."""
+    global _config_file_override
+    _config_file_override = Path(path).expanduser().resolve()
+    # Clear cached config so next get_config() uses the new path
+    get_config.cache_clear()
+
+
+def get_config_file() -> Path:
+    """Return the effective config file path (override or default)."""
+    if _config_file_override is not None:
+        return _config_file_override
+    return CONFIG_FILE
+
 # Embedding constants
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 
@@ -149,6 +167,15 @@ class PeersConfig:
 
 
 @dataclass
+class ToolSummariesConfig:
+    """Tool summary generation configuration."""
+
+    excluded_tools: list[str] = field(default_factory=list)  # Action types to skip
+    max_summary_length: int = 800  # Maximum Tool_Summary length in characters
+    include_meaningful_output: bool = True  # Whether to excerpt Meaningful_Results into summaries
+
+
+@dataclass
 class Config:
     """Main configuration."""
 
@@ -160,6 +187,7 @@ class Config:
     indexing: IndexingConfig = field(default_factory=IndexingConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
     peers: PeersConfig = field(default_factory=PeersConfig)
+    tool_summaries: ToolSummariesConfig = field(default_factory=ToolSummariesConfig)
 
     @classmethod
     def from_dict(cls, data: dict) -> "Config":
@@ -172,6 +200,7 @@ class Config:
         idx_data = data.get("indexing", {})
         srv_data = data.get("server", {})
         peers_data = data.get("peers", {})
+        tool_summaries_data = data.get("tool_summaries", {})
 
         return cls(
             cli=CLISourceConfig(**cli_data) if cli_data else CLISourceConfig(),
@@ -182,15 +211,17 @@ class Config:
             indexing=IndexingConfig(**idx_data) if idx_data else IndexingConfig(),
             server=ServerConfig(**srv_data) if srv_data else ServerConfig(),
             peers=PeersConfig(**peers_data) if peers_data else PeersConfig(),
+            tool_summaries=ToolSummariesConfig(**tool_summaries_data) if tool_summaries_data else ToolSummariesConfig(),
         )
 
 
 @lru_cache(maxsize=1)
 def get_config() -> Config:
     """Load configuration (cached)."""
-    # Try user config first
-    if CONFIG_FILE.exists():
-        with open(CONFIG_FILE, "rb") as f:
+    # Try user/override config first
+    config_file = get_config_file()
+    if config_file.exists():
+        with open(config_file, "rb") as f:
             return Config.from_dict(tomllib.load(f))
 
     # Fall back to default config
@@ -251,6 +282,9 @@ def diff_configs(old: Config, new: Config) -> list[dict]:
         ("peers.secret", "***" if old.peers.secret else "", "***" if new.peers.secret else ""),
         ("peers.timeout_seconds", old.peers.timeout_seconds, new.peers.timeout_seconds),
         ("peers.debug_tool_enabled", old.peers.debug_tool_enabled, new.peers.debug_tool_enabled),
+        ("tool_summaries.excluded_tools", old.tool_summaries.excluded_tools, new.tool_summaries.excluded_tools),
+        ("tool_summaries.max_summary_length", old.tool_summaries.max_summary_length, new.tool_summaries.max_summary_length),
+        ("tool_summaries.include_meaningful_output", old.tool_summaries.include_meaningful_output, new.tool_summaries.include_meaningful_output),
     ]
 
     for key, old_val, new_val in reindex_keys:
