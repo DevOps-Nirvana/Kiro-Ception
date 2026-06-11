@@ -38,8 +38,7 @@ from pathlib import Path
 # Track process start time for uptime reporting
 _process_start_time = time.time()
 
-# Fingerprint test marker: 2026-06-11T23:17-FINGERPRINT-TEST
-# a
+
 
 def _preload_native_extensions(backend_type: str):
     """Eagerly import native extensions that deadlock when loaded from background threads.
