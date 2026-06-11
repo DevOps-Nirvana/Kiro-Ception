@@ -12,6 +12,9 @@ wheels/
 # Cache
 .cache/
 
+# Mutation testing
+mutants/
+
 # IDE
 .idea/
 .vscode/

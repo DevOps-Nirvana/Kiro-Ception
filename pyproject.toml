@@ -59,6 +59,5 @@ source_paths = ["src/kiro_ception/"]
 [dependency-groups]
 dev = [
     "hypothesis>=6.100.0",
-    "mutmut>=3.6.0",
     "pytest>=9.0.3",
 ]
