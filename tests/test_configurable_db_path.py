@@ -60,7 +60,7 @@ class TestProperty1AllArtifactsDeriveFromCacheDir:
     """Property 1: All artifacts derive from configured cache directory.
 
     *For any* valid cache_dir string (absolute path or tilde-prefixed path),
-    all derived artifact paths — the leader lock file, leader info file, and
+    all derived artifact paths — the engine lock file, engine info file, and
     embedding cache database — SHALL be located within the expanded cache_dir
     directory.
 
@@ -88,20 +88,20 @@ class TestProperty1AllArtifactsDeriveFromCacheDir:
 
     @given(cache_dir=valid_cache_dir)
     @settings(max_examples=200)
-    def test_leader_info_path_within_cache_dir(self, cache_dir: str):
-        """_get_leader_info_path() returns a path within the expanded cache directory."""
+    def test_engine_info_path_within_cache_dir(self, cache_dir: str):
+        """_get_engine_info_path() returns a path within the expanded cache directory."""
         config = _make_config_with_cache_dir(cache_dir)
         expected_parent = expand_path(cache_dir)
 
         with patch("kiro_ception.coordination.get_config", return_value=config):
-            from kiro_ception.coordination import _get_leader_info_path
-            leader_info_path = _get_leader_info_path()
+            from kiro_ception.coordination import _get_engine_info_path
+            engine_info_path = _get_engine_info_path()
 
-        assert leader_info_path.parent == expected_parent, (
-            f"Leader info path {leader_info_path} not within cache dir {expected_parent}"
+        assert engine_info_path.parent == expected_parent, (
+            f"Engine info path {engine_info_path} not within cache dir {expected_parent}"
         )
-        assert str(leader_info_path).startswith(str(expected_parent)), (
-            f"Leader info path {leader_info_path} does not start with {expected_parent}"
+        assert str(engine_info_path).startswith(str(expected_parent)), (
+            f"Engine info path {engine_info_path} does not start with {expected_parent}"
         )
 
     @given(cache_dir=valid_cache_dir, fingerprint=st.text(min_size=1, max_size=50))
@@ -135,12 +135,12 @@ class TestProperty1AllArtifactsDeriveFromCacheDir:
                 with patch.object(Path, "mkdir"):
                     from kiro_ception.coordination import (
                         _get_lock_path,
-                        _get_leader_info_path,
+                        _get_engine_info_path,
                     )
                     from kiro_ception.cache import _get_cache_db_path
 
                     lock_path = _get_lock_path()
-                    info_path = _get_leader_info_path()
+                    info_path = _get_engine_info_path()
                     db_path = _get_cache_db_path(fingerprint)
 
         assert lock_path.parent == expected_parent
@@ -212,8 +212,8 @@ def _get_all_artifact_paths(cache_dir: str, fingerprint: str = "test-fp") -> set
     cache_path = expand_path(cache_dir)
     fp_hash = hashlib.md5(fingerprint.encode()).hexdigest()[:12]
     return {
-        cache_path / "leader.lock",
-        cache_path / "leader.json",
+        cache_path / "engine.lock",
+        cache_path / "engine.json",
         cache_path / f"cache_{fp_hash}.db",
     }
 
@@ -276,7 +276,7 @@ class TestConfigDefaultTomlDocumentation:
     """Unit tests for documentation content in config.default.toml.
 
     Validates that the default config file contains proper documentation for
-    multi-instance usage, cache_dir instance isolation, and leader_port uniqueness.
+    multi-instance usage, cache_dir instance isolation, and engine_port uniqueness.
 
     **Validates: Requirements 2.1, 2.2, 2.3**
     """
@@ -311,18 +311,18 @@ class TestConfigDefaultTomlDocumentation:
             "'instance isolation' or 'instance-local artifacts'"
         )
 
-    def test_leader_port_comment_mentions_unique_port(self):
-        """leader_port comment explains that each instance requires a unique port.
+    def test_engine_port_comment_mentions_unique_port(self):
+        """engine_port comment explains that each instance requires a unique port.
 
         **Validates: Requirements 2.3**
         """
         content = self._read_config()
         assert (
-            "unique leader_port" in content.lower()
-            or "each concurrent kiro-ception instance requires a unique leader_port value"
+            "unique engine_port" in content.lower()
+            or "each concurrent kiro-ception instance requires a unique engine_port value"
             in content.lower()
         ), (
-            "config.default.toml leader_port comment does not mention "
+            "config.default.toml engine_port comment does not mention "
             "'unique' port requirement per instance"
         )
 
@@ -374,7 +374,7 @@ class TestDirectoryCreation:
         mock_mkdir.assert_called_once_with(parents=True, exist_ok=True)
 
     def test_get_lock_path_returns_correct_filename(self):
-        """_get_lock_path() returns cache_dir / 'leader.lock'."""
+        """_get_lock_path() returns cache_dir / 'engine.lock'."""
         config = Config(embedding=EmbeddingConfig(cache_dir="/tmp/test-kiro-cache"))
 
         with patch("kiro_ception.coordination.get_config", return_value=config):
@@ -382,7 +382,7 @@ class TestDirectoryCreation:
                 from kiro_ception.coordination import _get_lock_path
                 result = _get_lock_path()
 
-        assert result == Path("/tmp/test-kiro-cache/leader.lock")
+        assert result == Path("/tmp/test-kiro-cache/engine.lock")
 
     def test_get_cache_db_path_calls_mkdir(self):
         """_get_cache_db_path() creates the cache directory with parents=True, exist_ok=True."""
@@ -439,8 +439,8 @@ class TestConfigReloadPropagation:
         assert new_lock_path.parent == Path(new_dir)
         assert old_lock_path != new_lock_path
 
-    def test_leader_info_path_uses_new_cache_dir_after_reload(self, tmp_path):
-        """After config reload with new cache_dir, _get_leader_info_path uses new dir."""
+    def test_engine_info_path_uses_new_cache_dir_after_reload(self, tmp_path):
+        """After config reload with new cache_dir, _get_engine_info_path uses new dir."""
         old_dir = str(tmp_path / "old-cache")
         new_dir = str(tmp_path / "new-cache")
 
@@ -448,14 +448,14 @@ class TestConfigReloadPropagation:
         new_config = _make_config_with_cache_dir(new_dir)
 
         with patch("kiro_ception.coordination.get_config", return_value=old_config):
-            from kiro_ception.coordination import _get_leader_info_path
-            old_info_path = _get_leader_info_path()
+            from kiro_ception.coordination import _get_engine_info_path
+            old_info_path = _get_engine_info_path()
 
         assert old_info_path.parent == Path(old_dir)
 
         # Simulate config reload: now get_config returns new config
         with patch("kiro_ception.coordination.get_config", return_value=new_config):
-            new_info_path = _get_leader_info_path()
+            new_info_path = _get_engine_info_path()
 
         assert new_info_path.parent == Path(new_dir)
         assert old_info_path != new_info_path
@@ -500,7 +500,7 @@ class TestConfigReloadPropagation:
         fingerprint = "reload-test"
 
         from kiro_ception.cache import _get_cache_db_path
-        from kiro_ception.coordination import _get_leader_info_path, _get_lock_path
+        from kiro_ception.coordination import _get_engine_info_path, _get_lock_path
 
         # All paths under dir_a
         with (
@@ -509,7 +509,7 @@ class TestConfigReloadPropagation:
             patch.object(Path, "mkdir"),
         ):
             lock_a = _get_lock_path()
-            info_a = _get_leader_info_path()
+            info_a = _get_engine_info_path()
             db_a = _get_cache_db_path(fingerprint)
 
         assert lock_a.parent == Path(dir_a)
@@ -523,7 +523,7 @@ class TestConfigReloadPropagation:
             patch.object(Path, "mkdir"),
         ):
             lock_b = _get_lock_path()
-            info_b = _get_leader_info_path()
+            info_b = _get_engine_info_path()
             db_b = _get_cache_db_path(fingerprint)
 
         assert lock_b.parent == Path(dir_b)

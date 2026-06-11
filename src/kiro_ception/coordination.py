@@ -1,10 +1,10 @@
-"""Leader-follower pattern for multi-instance coordination.
+"""Engine-follower pattern for multi-instance coordination.
 
-Only one process (the leader) holds embeddings in RAM and runs the indexer.
-All other processes (followers) forward requests to the leader via localhost HTTP.
-Automatic failover: if the leader dies, a follower promotes itself.
+Only one process (the engine) holds embeddings in RAM and runs the indexer.
+All other processes (followers) forward requests to the engine via localhost HTTP.
+Automatic failover: if the engine dies, a follower promotes itself.
 
-Zombie handling: if the leader process is alive but its HTTP server is dead,
+Zombie handling: if the engine process is alive but its HTTP server is dead,
 the successor will kill it by PID to release the file lock, then take over.
 On Windows, file locks cannot be removed by another process — the holder must die.
 """
@@ -34,8 +34,8 @@ logger = logging.getLogger(__name__)
 _process_start_time = time.time()
 
 # Lock file location
-_LOCK_FILE_NAME = "leader.lock"
-_LEADER_INFO_NAME = "leader.json"
+_LOCK_FILE_NAME = "engine.lock"
+_LEADER_INFO_NAME = "engine.json"
 
 # Simple HTML dashboard served at GET /
 _DASHBOARD_HTML = """<!DOCTYPE html>
@@ -137,7 +137,7 @@ function renderConfig(d) {
   h += row('Platform', d.version?.platform || '?');
   h += row('Role', d.instance?.role || '?');
   h += row('PID', d.instance?.pid || '?');
-  h += row('Port', d.instance?.port || d.server?.leader_port || '?');
+  h += row('Port', d.instance?.port || d.server?.engine_port || '?');
   h += row('Backend', d.embedding?.backend || '?');
   h += row('Model', d.embedding?.model || '?');
   h += row('Dimensions', d.embedding?.dimensions || 'auto');
@@ -177,27 +177,27 @@ setInterval(load, 10000);
 
 
 def _get_lock_path() -> Path:
-    """Get the leader lock file path."""
+    """Get the engine lock file path."""
     config = get_config()
     cache_path = expand_path(config.embedding.cache_dir)
     cache_path.mkdir(parents=True, exist_ok=True)
     return cache_path / _LOCK_FILE_NAME
 
 
-def _get_leader_info_path() -> Path:
-    """Get the leader info file path (stores port + pid)."""
+def _get_engine_info_path() -> Path:
+    """Get the engine info file path (stores port + pid)."""
     config = get_config()
     cache_path = expand_path(config.embedding.cache_dir)
     return cache_path / _LEADER_INFO_NAME
 
 
-def _write_leader_info(port: int, pid: int):
-    """Write leader info to disk atomically so followers can find it.
+def _write_engine_info(port: int, pid: int):
+    """Write engine info to disk atomically so followers can find it.
 
     Uses write-to-temp + rename to avoid partial-write corruption if the
     process crashes mid-write or the disk fills up.
     """
-    info_path = _get_leader_info_path()
+    info_path = _get_engine_info_path()
     info = {"port": port, "pid": pid, "started_at": time.time()}
     dir_path = info_path.parent
     fd, tmp_path = tempfile.mkstemp(dir=str(dir_path), suffix=".tmp")
@@ -215,9 +215,9 @@ def _write_leader_info(port: int, pid: int):
         raise
 
 
-def _read_leader_info() -> dict | None:
-    """Read leader info from disk."""
-    info_path = _get_leader_info_path()
+def _read_engine_info() -> dict | None:
+    """Read engine info from disk."""
+    info_path = _get_engine_info_path()
     try:
         with open(info_path) as f:
             return json.load(f)
@@ -226,7 +226,7 @@ def _read_leader_info() -> dict | None:
 
 
 def _is_port_open(port: int) -> bool:
-    """Check if the leader's HTTP port is responding."""
+    """Check if the engine's HTTP port is responding."""
     try:
         with socket.create_connection(("127.0.0.1", port), timeout=2):
             return True
@@ -261,13 +261,13 @@ def _is_pid_alive(pid: int) -> bool:
             return False
 
 
-def _is_leader_healthy(port: int, pid: int, retries: int = 2) -> bool:
-    """Check if the leader is both alive AND serving HTTP.
+def _is_engine_healthy(port: int, pid: int, retries: int = 2) -> bool:
+    """Check if the engine is both alive AND serving HTTP.
 
     A process that holds the lock but doesn't respond to HTTP /health
     is a zombie and must be killed.
 
-    Retries the health check to avoid false-positive kills when the leader's
+    Retries the health check to avoid false-positive kills when the engine's
     HTTP thread is momentarily busy (e.g., serving a large search request).
     """
     if not _is_pid_alive(pid):
@@ -302,7 +302,7 @@ def _kill_process(pid: int) -> bool:
         # Never kill ourselves
         return False
 
-    logger.warning(f"Killing zombie leader process (pid={pid})")
+    logger.warning(f"Killing zombie engine process (pid={pid})")
 
     if sys.platform == "win32":
         PROCESS_TERMINATE = 0x0001
@@ -341,41 +341,41 @@ def _wait_for_pid_death(pid: int, timeout: float = 5.0) -> bool:
     return not _is_pid_alive(pid)
 
 
-class LeaderInstance:
-    """Manages the leader role: holds embeddings in RAM, serves HTTP API, runs indexer."""
+class EngineInstance:
+    """Manages the engine role: holds embeddings in RAM, serves HTTP API, runs indexer."""
 
     def __init__(self):
         self._lock: FileLock | None = None
         self._http_server: HTTPServer | None = None
         self._http_thread: threading.Thread | None = None
-        self._is_leader = False
-        self._port = get_config().server.leader_port
+        self._is_engine = False
+        self._port = get_config().server.engine_port
         self._search_handler = None  # Set by server.py
 
     @property
-    def is_leader(self) -> bool:
-        return self._is_leader
+    def is_engine(self) -> bool:
+        return self._is_engine
 
     @property
     def port(self) -> int:
         return self._port
 
-    def try_acquire_leadership(self) -> bool:
-        """Attempt to become the leader. Non-blocking.
+    def try_acquire_engineship(self) -> bool:
+        """Attempt to become the engine. Non-blocking.
 
-        Returns True if this process is now the leader.
+        Returns True if this process is now the engine.
         """
         lock_path = _get_lock_path()
         self._lock = FileLock(lock_path, timeout=0)
 
         try:
             self._lock.acquire(timeout=0)
-            self._is_leader = True
-            _write_leader_info(self._port, os.getpid())
-            logger.info(f"Acquired leadership (pid={os.getpid()}, port={self._port})")
+            self._is_engine = True
+            _write_engine_info(self._port, os.getpid())
+            logger.info(f"Acquired engineship (pid={os.getpid()}, port={self._port})")
             return True
         except Timeout:
-            self._is_leader = False
+            self._is_engine = False
             return False
 
     def start_http_server(self, search_handler) -> bool:
@@ -389,10 +389,10 @@ class LeaderInstance:
             True if the HTTP server started and is responding to /health.
         """
         self._search_handler = search_handler
-        leader_instance = self
+        engine_instance = self
 
         class RequestHandler(BaseHTTPRequestHandler):
-            """HTTP handler for leader API."""
+            """HTTP handler for engine API."""
 
             def log_message(self, format, *args):
                 """Suppress default HTTP logging."""
@@ -444,7 +444,7 @@ class LeaderInstance:
                         body = json.loads(raw_body) if raw_body else {}
 
                     if self.path == "/search":
-                        result = leader_instance._search_handler(body)
+                        result = engine_instance._search_handler(body)
                         self._send_response_maybe_encrypted(result)
 
                     elif self.path == "/reindex":
@@ -549,12 +549,12 @@ class LeaderInstance:
                         self._send_json(get_config())
 
                     elif self.path == "/health":
-                        self._send_json({"status": "ok", "role": "leader", "pid": os.getpid()})
+                        self._send_json({"status": "ok", "role": "engine", "pid": os.getpid()})
 
                     elif self.path == "/role":
                         self._send_json({
-                            "role": "leader",
-                            "port": leader_instance._port,
+                            "role": "engine",
+                            "port": engine_instance._port,
                             "pid": os.getpid(),
                         })
 
@@ -578,12 +578,12 @@ class LeaderInstance:
             self._http_thread = threading.Thread(
                 target=self._http_server.serve_forever,
                 daemon=True,
-                name="leader-http",
+                name="engine-http",
             )
             self._http_thread.start()
-            logger.info(f"Leader HTTP server started on 127.0.0.1:{self._port}")
+            logger.info(f"Engine HTTP server started on 127.0.0.1:{self._port}")
         except OSError as e:
-            logger.error(f"Failed to start leader HTTP server on port {self._port}: {e}")
+            logger.error(f"Failed to start engine HTTP server on port {self._port}: {e}")
             # Try next port
             self._port += 1
             try:
@@ -592,13 +592,13 @@ class LeaderInstance:
                 self._http_thread = threading.Thread(
                     target=self._http_server.serve_forever,
                     daemon=True,
-                    name="leader-http",
+                    name="engine-http",
                 )
                 self._http_thread.start()
-                _write_leader_info(self._port, os.getpid())
-                logger.info(f"Leader HTTP server started on 127.0.0.1:{self._port} (fallback port)")
+                _write_engine_info(self._port, os.getpid())
+                logger.info(f"Engine HTTP server started on 127.0.0.1:{self._port} (fallback port)")
             except OSError as e2:
-                logger.error(f"Failed to start leader HTTP on fallback port {self._port}: {e2}")
+                logger.error(f"Failed to start engine HTTP on fallback port {self._port}: {e2}")
 
         # Verify the server is actually responding.
         # Use a simple socket connect first (faster than HTTP) to detect when
@@ -612,25 +612,25 @@ class LeaderInstance:
 
         if not started:
             logger.error(
-                f"Leader HTTP server not accepting connections on port "
+                f"Engine HTTP server not accepting connections on port "
                 f"{self._port} after 2s — server failed to start"
             )
-            self.release_leadership()
+            self.release_engineship()
             return False
 
         # Port is open — now verify full /health response
-        if not _is_leader_healthy(self._port, os.getpid()):
+        if not _is_engine_healthy(self._port, os.getpid()):
             logger.error(
-                f"Leader HTTP server on port {self._port} accepts connections "
+                f"Engine HTTP server on port {self._port} accepts connections "
                 f"but /health check failed — handler may be broken"
             )
-            self.release_leadership()
+            self.release_engineship()
             return False
 
         return True
 
-    def release_leadership(self):
-        """Release the leader lock and stop HTTP server."""
+    def release_engineship(self):
+        """Release the engine lock and stop HTTP server."""
         if self._http_server:
             self._http_server.shutdown()
             self._http_server = None
@@ -639,29 +639,29 @@ class LeaderInstance:
                 self._lock.release()
             except Exception:
                 pass
-        self._is_leader = False
+        self._is_engine = False
 
 
 class FollowerInstance:
-    """Manages the follower role: forwards requests to leader via HTTP."""
+    """Manages the follower role: forwards requests to engine via HTTP."""
 
     def __init__(self):
-        self._leader_port: int | None = None
+        self._engine_port: int | None = None
         self._session = None
 
     @property
-    def leader_port(self) -> int | None:
-        if self._leader_port is None:
-            self._refresh_leader_port()
-        return self._leader_port
+    def engine_port(self) -> int | None:
+        if self._engine_port is None:
+            self._refresh_engine_port()
+        return self._engine_port
 
-    def _refresh_leader_port(self):
-        """Re-read leader port from disk (handles leader restarts on new port)."""
-        info = _read_leader_info()
+    def _refresh_engine_port(self):
+        """Re-read engine port from disk (handles engine restarts on new port)."""
+        info = _read_engine_info()
         if info:
-            self._leader_port = info.get("port")
+            self._engine_port = info.get("port")
         else:
-            self._leader_port = None
+            self._engine_port = None
 
     def _get_session(self):
         if self._session is None:
@@ -671,66 +671,66 @@ class FollowerInstance:
         return self._session
 
     def _base_url(self) -> str:
-        port = self.leader_port
+        port = self.engine_port
         if port is None:
-            raise ConnectionError("No leader info available")
+            raise ConnectionError("No engine info available")
         return f"http://127.0.0.1:{port}"
 
-    def is_leader_alive(self) -> bool:
-        """Check if the leader is responding AND its PID is alive."""
-        info = _read_leader_info()
+    def is_engine_alive(self) -> bool:
+        """Check if the engine is responding AND its PID is alive."""
+        info = _read_engine_info()
         if not info:
             return False
         port = info.get("port")
         pid = info.get("pid")
         if port is None or pid is None:
             return False
-        return _is_leader_healthy(port, pid)
+        return _is_engine_healthy(port, pid)
 
     def search(self, request: dict) -> dict:
-        """Forward a search request to the leader."""
+        """Forward a search request to the engine."""
         session = self._get_session()
         try:
             resp = session.post(f"{self._base_url()}/search", json=request, timeout=30)
             resp.raise_for_status()
             return resp.json()
         except (ConnectionError, OSError):
-            # Leader may have restarted on a different port — refresh and retry
-            self._refresh_leader_port()
+            # Engine may have restarted on a different port — refresh and retry
+            self._refresh_engine_port()
             resp = session.post(f"{self._base_url()}/search", json=request, timeout=30)
             resp.raise_for_status()
             return resp.json()
 
     def get_status(self) -> dict:
-        """Get indexing status from leader."""
+        """Get indexing status from engine."""
         session = self._get_session()
         resp = session.get(f"{self._base_url()}/status", timeout=5)
         resp.raise_for_status()
         return resp.json()
 
     def get_config(self) -> dict:
-        """Get config from leader."""
+        """Get config from engine."""
         session = self._get_session()
         resp = session.get(f"{self._base_url()}/config", timeout=5)
         resp.raise_for_status()
         return resp.json()
 
     def trigger_reindex(self) -> dict:
-        """Tell leader to reindex."""
+        """Tell engine to reindex."""
         session = self._get_session()
         resp = session.post(f"{self._base_url()}/reindex", json={}, timeout=5)
         resp.raise_for_status()
         return resp.json()
 
     def reload_config(self) -> dict:
-        """Tell leader to reload config."""
+        """Tell engine to reload config."""
         session = self._get_session()
         resp = session.post(f"{self._base_url()}/reload-config", json={}, timeout=5)
         resp.raise_for_status()
         return resp.json()
 
     def trigger_rescan(self) -> dict:
-        """Tell leader to rescan now."""
+        """Tell engine to rescan now."""
         session = self._get_session()
         resp = session.post(f"{self._base_url()}/rescan", json={}, timeout=5)
         resp.raise_for_status()
@@ -738,14 +738,14 @@ class FollowerInstance:
 
 
 class InstanceManager:
-    """Manages the lifecycle of this process as either leader or follower.
+    """Manages the lifecycle of this process as either engine or follower.
 
     Handles initial role assignment, automatic failover, and periodic
-    heartbeat checks for leader liveness.
+    heartbeat checks for engine liveness.
 
-    Zombie handling: if the current leader holds the file lock but its HTTP
+    Zombie handling: if the current engine holds the file lock but its HTTP
     server is dead, this manager will kill it by PID to release the lock,
-    then attempt to take over leadership. If 3 consecutive leader spawns
+    then attempt to take over engineship. If 3 consecutive engine spawns
     fail health checks, gives up and stays in follower mode permanently.
     """
 
@@ -754,14 +754,14 @@ class InstanceManager:
     DEGRADED_RETRY_INTERVAL = 300  # 5 minutes before retrying from degraded state
 
     def __init__(self):
-        self._leader: LeaderInstance | None = None
+        self._engine: EngineInstance | None = None
         self._follower: FollowerInstance | None = None
-        self._role: str = "undecided"  # "leader" | "follower" | "undecided" | "degraded"
+        self._role: str = "undecided"  # "engine" | "follower" | "undecided" | "degraded"
         self._lock = threading.Lock()
         self._search_handler = None  # Stored for use during promotion
         self._heartbeat_thread: threading.Thread | None = None
-        self._spawn_failures: int = 0  # Consecutive failed leader spawns
-        self._permanently_degraded: bool = False  # True = stop trying to become leader
+        self._spawn_failures: int = 0  # Consecutive failed engine spawns
+        self._permanently_degraded: bool = False  # True = stop trying to become engine
         self._degraded_since: float | None = None  # When we entered degraded state
 
     @property
@@ -769,33 +769,33 @@ class InstanceManager:
         return self._role
 
     @property
-    def is_leader(self) -> bool:
-        return self._role == "leader"
+    def is_engine(self) -> bool:
+        return self._role == "engine"
 
     @property
-    def leader_instance(self) -> LeaderInstance | None:
-        return self._leader
+    def engine_instance(self) -> EngineInstance | None:
+        return self._engine
 
     @property
     def follower_instance(self) -> FollowerInstance | None:
         return self._follower
 
-    def _kill_zombie_leader(self) -> bool:
-        """Kill the zombie leader process identified in leader.json.
+    def _kill_zombie_engine(self) -> bool:
+        """Kill the zombie engine process identified in engine.json.
 
         Returns True if the zombie was killed (or was already dead) and
         the lock file is now available for acquisition.
         """
-        leader_info = _read_leader_info()
-        if not leader_info:
-            return True  # No leader info — nothing to kill
+        engine_info = _read_engine_info()
+        if not engine_info:
+            return True  # No engine info — nothing to kill
 
-        pid = leader_info.get("pid")
+        pid = engine_info.get("pid")
         if not pid or pid == os.getpid():
             return True  # No PID or it's us
 
         if not _is_pid_alive(pid):
-            logger.info(f"Zombie leader pid={pid} already dead")
+            logger.info(f"Zombie engine pid={pid} already dead")
             # Try to clean up the lock file
             try:
                 _get_lock_path().unlink(missing_ok=True)
@@ -806,13 +806,13 @@ class InstanceManager:
         # PID is alive but HTTP is dead — it's a zombie. Kill it.
         killed = _kill_process(pid)
         if not killed:
-            logger.error(f"Failed to kill zombie leader pid={pid}")
+            logger.error(f"Failed to kill zombie engine pid={pid}")
             return False
 
         # Wait for it to actually die so the OS releases the file lock
         if not _wait_for_pid_death(pid, timeout=5.0):
             logger.error(
-                f"Zombie leader pid={pid} did not die within timeout "
+                f"Zombie engine pid={pid} did not die within timeout "
                 f"after kill signal"
             )
             return False
@@ -825,86 +825,86 @@ class InstanceManager:
 
         return True
 
-    def _try_become_leader(self, search_handler) -> bool:
-        """Single attempt to acquire leadership and start HTTP server.
+    def _try_become_engine(self, search_handler) -> bool:
+        """Single attempt to acquire engineship and start HTTP server.
 
-        Returns True only if leadership is acquired AND the HTTP server
+        Returns True only if engineship is acquired AND the HTTP server
         passes health check. On failure, releases any acquired lock.
         """
-        leader = LeaderInstance()
-        if not leader.try_acquire_leadership():
+        engine = EngineInstance()
+        if not engine.try_acquire_engineship():
             return False
 
         # Acquired the lock — now start the HTTP server and verify health
-        server_ok = leader.start_http_server(search_handler)
+        server_ok = engine.start_http_server(search_handler)
         if not server_ok:
             logger.error(
-                "Acquired leadership but HTTP server failed health check — "
+                "Acquired engineship but HTTP server failed health check — "
                 "releasing lock"
             )
-            leader.release_leadership()
+            engine.release_engineship()
             return False
 
         # Success
-        self._leader = leader
+        self._engine = engine
         self._follower = None
-        self._role = "leader"
+        self._role = "engine"
         self._spawn_failures = 0
         return True
 
     def initialize(self, search_handler) -> str:
         """Determine role and set up accordingly.
 
-        Attempts to become leader. If an existing leader is healthy, becomes
-        follower. If the existing leader is a zombie, kills it and takes over.
+        Attempts to become engine. If an existing engine is healthy, becomes
+        follower. If the existing engine is a zombie, kills it and takes over.
         If our own HTTP server fails to start 3 times, enters degraded follower
         mode and logs clearly that it cannot serve with the current config.
 
         Args:
-            search_handler: The search function to serve if this becomes leader.
+            search_handler: The search function to serve if this becomes engine.
 
         Returns:
-            "leader", "follower", or "degraded"
+            "engine", "follower", or "degraded"
         """
         self._search_handler = search_handler
 
         with self._lock:
-            # Fast path: try to grab leadership directly
-            if self._try_become_leader(search_handler):
-                return "leader"
+            # Fast path: try to grab engineship directly
+            if self._try_become_engine(search_handler):
+                return "engine"
 
-            # Couldn't get the lock. Check if existing leader is healthy.
-            leader_info = _read_leader_info()
-            if leader_info:
-                port = leader_info.get("port")
-                pid = leader_info.get("pid")
-                if port and pid and _is_leader_healthy(port, pid):
-                    # Healthy leader exists — become follower
+            # Couldn't get the lock. Check if existing engine is healthy.
+            engine_info = _read_engine_info()
+            if engine_info:
+                port = engine_info.get("port")
+                pid = engine_info.get("pid")
+                if port and pid and _is_engine_healthy(port, pid):
+                    # Healthy engine exists — become follower
                     self._follower = FollowerInstance()
                     self._role = "follower"
                     return "follower"
 
-            # Leader is unhealthy (zombie or dead). Kill it and retry.
+            # Engine is unhealthy (zombie or dead). Kill it and retry.
             logger.warning(
-                "Existing leader is unresponsive — killing zombie and "
+                "Existing engine is unresponsive — killing zombie and "
                 "attempting takeover"
             )
 
             for attempt in range(self.MAX_SPAWN_ATTEMPTS):
-                if self._kill_zombie_leader():
+                if self._kill_zombie_engine():
                     time.sleep(0.5)  # Brief pause for OS to release handles
 
-                    if self._try_become_leader(search_handler):
-                        return "leader"
+                    if self._try_become_engine(search_handler):
+                        return "engine"
 
                 # Check if another process took over while we waited
-                leader_info = _read_leader_info()
-                if leader_info:
-                    port = leader_info.get("port")
-                    pid = leader_info.get("pid")
-                    if port and pid and _is_leader_healthy(port, pid):
+                engine_info = _read_engine_info()
+                if engine_info:
+                    port = engine_info.get("port")
+                    pid = engine_info.get("pid")
+                    if port and pid and _is_engine_healthy(port, pid):
                         logger.info(
-                            "Another process became healthy leader during our "
+                            "Another process became healthy engine during our "
                             "takeover attempt — becoming follower"
                         )
                         self._follower = FollowerInstance()
@@ -913,7 +913,7 @@ class InstanceManager:
 
                 self._spawn_failures += 1
                 logger.warning(
-                    f"Leader spawn attempt {attempt + 1}/{self.MAX_SPAWN_ATTEMPTS} "
+                    f"Engine spawn attempt {attempt + 1}/{self.MAX_SPAWN_ATTEMPTS} "
                     f"failed (total failures: {self._spawn_failures})"
                 )
 
@@ -930,16 +930,16 @@ class InstanceManager:
                 "start with the current configuration (port=%s). Check for port "
                 "conflicts or other processes holding resources.",
                 self.MAX_SPAWN_ATTEMPTS,
-                get_config().server.leader_port,
+                get_config().server.engine_port,
             )
             # Still set up as follower in case another instance manages to lead
             self._follower = FollowerInstance()
             return "degraded"
 
-    def promote_to_leader(self, search_handler) -> bool:
-        """Attempt to promote this follower to leader (failover).
+    def promote_to_engine(self, search_handler) -> bool:
+        """Attempt to promote this follower to engine (failover).
 
-        If the current leader is a zombie (alive but not serving HTTP),
+        If the current engine is a zombie (alive but not serving HTTP),
         kills it first. If our own server fails to start after killing
         the zombie, counts toward the spawn failure limit.
 
@@ -952,17 +952,17 @@ class InstanceManager:
             return False
 
         with self._lock:
-            # Try direct acquisition (leader might have exited cleanly and
+            # Try direct acquisition (engine might have exited cleanly and
             # the OS released the file lock). Do NOT unlink the lock file —
             # that creates a TOCTOU race with other followers also promoting.
             # FileLock handles stale files correctly on its own.
-            if self._try_become_leader(search_handler):
-                logger.info("Promoted to leader after failover")
+            if self._try_become_engine(search_handler):
+                logger.info("Promoted to engine after failover")
                 return True
 
             # Direct acquisition failed — zombie is holding the lock.
             # Kill it.
-            if not self._kill_zombie_leader():
+            if not self._kill_zombie_engine():
                 self._spawn_failures += 1
                 if self._spawn_failures >= self.MAX_SPAWN_ATTEMPTS:
                     self._permanently_degraded = True
@@ -970,7 +970,7 @@ class InstanceManager:
                     self._role = "degraded"
                     logger.error(
                         "PROMOTION PERMANENTLY FAILED: unable to kill zombie "
-                        "leader after %d attempts. Entering degraded mode. "
+                        "engine after %d attempts. Entering degraded mode. "
                         "Manual intervention required.",
                         self._spawn_failures,
                     )
@@ -979,9 +979,9 @@ class InstanceManager:
             # Zombie killed — wait briefly for OS cleanup, then try again
             time.sleep(0.5)
 
-            if self._try_become_leader(search_handler):
+            if self._try_become_engine(search_handler):
                 logger.info(
-                    "Promoted to leader after killing zombie (pid from leader.json)"
+                    "Promoted to engine after killing zombie (pid from engine.json)"
                 )
                 return True
 
@@ -996,7 +996,7 @@ class InstanceManager:
                     "will not start after %d consecutive failures. Entering "
                     "degraded mode. Check port %s and current config.",
                     self._spawn_failures,
-                    get_config().server.leader_port,
+                    get_config().server.engine_port,
                 )
             else:
                 logger.warning(
@@ -1013,21 +1013,21 @@ class InstanceManager:
             "degraded": self._permanently_degraded,
             "spawn_failures": self._spawn_failures,
         }
-        if self._role == "leader" and self._leader:
-            info["port"] = self._leader.port
+        if self._role == "engine" and self._engine:
+            info["port"] = self._engine.port
         elif self._role in ("follower", "degraded"):
-            leader_info = _read_leader_info()
-            if leader_info:
-                info["leader_port"] = leader_info.get("port")
-                info["leader_pid"] = leader_info.get("pid")
+            engine_info = _read_engine_info()
+            if engine_info:
+                info["engine_port"] = engine_info.get("port")
+                info["engine_pid"] = engine_info.get("pid")
         return info
 
     def start_heartbeat(self):
         """Start the background heartbeat thread.
 
-        - Leader: periodically updates leader.json with a fresh timestamp.
-        - Follower: periodically checks if the leader is alive. If dead,
-          attempts promotion to leader.
+        - Engine: periodically updates engine.json with a fresh timestamp.
+        - Follower: periodically checks if the engine is alive. If dead,
+          attempts promotion to engine.
         - Degraded: does nothing (gave up).
         """
         if self._heartbeat_thread and self._heartbeat_thread.is_alive():
@@ -1038,10 +1038,10 @@ class InstanceManager:
         self._heartbeat_thread.start()
 
     def _heartbeat_loop(self):
-        """Periodic heartbeat: leader writes timestamp, follower checks liveness.
+        """Periodic heartbeat: engine writes timestamp, follower checks liveness.
 
         Adds ±25% jitter to prevent synchronized detection across multiple
-        followers (thundering herd on leader death).
+        followers (thundering herd on engine death).
         """
         config = get_config()
         base_interval = config.server.heartbeat_interval_seconds
@@ -1059,13 +1059,13 @@ class InstanceManager:
                         > self.DEGRADED_RETRY_INTERVAL
                     ):
                         logger.info(
-                            "Retrying leader election from degraded state "
+                            "Retrying engine election from degraded state "
                             f"(degraded for {int(time.time() - self._degraded_since)}s)"
                         )
                         self._spawn_failures = 0
                         self._permanently_degraded = False
                         self._degraded_since = None
-                        if self.promote_to_leader(self._search_handler):
+                        if self.promote_to_engine(self._search_handler):
                             from .background_indexer import get_background_indexer
                             indexer = get_background_indexer()
                             indexer.start()
@@ -1078,30 +1078,30 @@ class InstanceManager:
                             )
                     continue
 
-                if self.is_leader:
-                    # Leader: refresh the timestamp in leader.json
-                    if self._leader:
-                        _write_leader_info(self._leader.port, os.getpid())
+                if self.is_engine:
+                    # Engine: refresh the timestamp in engine.json
+                    if self._engine:
+                        _write_engine_info(self._engine.port, os.getpid())
                 else:
-                    # Follower: check if leader is still alive
-                    if self._follower and not self._follower.is_leader_alive():
+                    # Follower: check if engine is still alive
+                    if self._follower and not self._follower.is_engine_alive():
                         # Before attempting promotion, check if another follower
                         # already won the election (avoids counting a lost race
                         # as a spawn failure).
-                        leader_info = _read_leader_info()
-                        if leader_info:
-                            lport = leader_info.get("port")
-                            lpid = leader_info.get("pid")
-                            if lport and lpid and _is_leader_healthy(lport, lpid):
+                        engine_info = _read_engine_info()
+                        if engine_info:
+                            lport = engine_info.get("port")
+                            lpid = engine_info.get("pid")
+                            if lport and lpid and _is_engine_healthy(lport, lpid):
                                 logger.info(
-                                    "Heartbeat: another process became leader "
+                                    "Heartbeat: another process became engine "
                                     "— staying as follower"
                                 )
-                                self._follower._refresh_leader_port()
+                                self._follower._refresh_engine_port()
                                 continue
 
-                        logger.info("Heartbeat: leader appears dead, attempting promotion")
-                        if self.promote_to_leader(self._search_handler):
+                        logger.info("Heartbeat: engine appears dead, attempting promotion")
+                        if self.promote_to_engine(self._search_handler):
                             # Successfully promoted — start the indexer
                             from .background_indexer import get_background_indexer
                             indexer = get_background_indexer()

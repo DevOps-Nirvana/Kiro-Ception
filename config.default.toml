@@ -26,8 +26,8 @@ model = "all-MiniLM-L6-v2"
 
 # Cache directory for all instance-local artifacts:
 # - Embedding database (cache_{fingerprint}.db)
-# - Leader lock file (leader.lock)
-# - Leader info file (leader.json)
+# - Engine lock file (engine.lock)
+# - Engine info file (engine.json)
 # Each unique cache_dir provides full instance isolation.
 # Use tilde (~) for home directory expansion.
 cache_dir = "~/.cache/kiro-ception"
@@ -85,18 +85,18 @@ throttle_ms = 0
 rescan_interval_minutes = 10
 
 [server]
-# Localhost-only port for leader-follower inter-process communication.
-# Only one instance (the leader) binds this port; followers connect to it.
-# Each concurrent Kiro-Ception instance requires a unique leader_port value.
-leader_port = 19742
+# Localhost-only port for engine-follower inter-process communication.
+# Only one instance (the engine) binds this port; followers connect to it.
+# Each concurrent Kiro-Ception instance requires a unique engine_port value.
+engine_port = 19742
 
-# If true, delay leader election until the first tool call (legacy behavior).
+# If true, delay engine election until the first tool call (legacy behavior).
 # Default (false) initializes eagerly at startup so the HTTP dashboard and
 # indexer are available immediately.
 # deferred_init = true
 
-# How often (in seconds) to check leader liveness. Followers use this to
-# detect a dead leader and self-promote. Leader uses it to refresh its heartbeat.
+# How often (in seconds) to check engine liveness. Followers use this to
+# detect a dead engine and self-promote. Engine uses it to refresh its heartbeat.
 heartbeat_interval_seconds = 30
 
 [peers]
@@ -149,7 +149,7 @@ include_meaningful_output = true
 # cache_dir = "~/.cache/kiro-ception-alt"
 #
 # [server]
-# leader_port = 19743
+# engine_port = 19743
 #
-# This gives the second instance its own embedding database, leader lock,
-# and leader info file with no file or port conflicts.
+# This gives the second instance its own embedding database, engine lock,
+# and engine info file with no file or port conflicts.

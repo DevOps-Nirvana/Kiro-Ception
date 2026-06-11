@@ -97,7 +97,7 @@ class TestBackgroundIndexerLive:
         """Start indexer thread, wait for completion, verify cache state."""
         monkeypatch.setattr(
             "kiro_ception.cache._get_cache_db_path",
-            lambda fp: tmp_path / f"cache_{fp}.db",
+            lambda fp: tmp_path / f"cache_{hashlib.md5(fp.encode()).hexdigest()[:12]}.db",
         )
 
         config = Config(
@@ -146,7 +146,7 @@ class TestBackgroundIndexerLive:
         """Second run should skip sessions that haven't changed."""
         monkeypatch.setattr(
             "kiro_ception.cache._get_cache_db_path",
-            lambda fp: tmp_path / f"cache_{fp}.db",
+            lambda fp: tmp_path / f"cache_{hashlib.md5(fp.encode()).hexdigest()[:12]}.db",
         )
 
         config = Config(
@@ -197,7 +197,7 @@ class TestBackgroundIndexerLive:
         """Embedding failures should be counted as errors, not crash."""
         monkeypatch.setattr(
             "kiro_ception.cache._get_cache_db_path",
-            lambda fp: tmp_path / f"cache_{fp}.db",
+            lambda fp: tmp_path / f"cache_{hashlib.md5(fp.encode()).hexdigest()[:12]}.db",
         )
 
         config = Config(
@@ -242,7 +242,7 @@ class TestBackgroundIndexerLive:
         """trigger_rescan should wake a sleeping indexer."""
         monkeypatch.setattr(
             "kiro_ception.cache._get_cache_db_path",
-            lambda fp: tmp_path / f"cache_{fp}.db",
+            lambda fp: tmp_path / f"cache_{hashlib.md5(fp.encode()).hexdigest()[:12]}.db",
         )
 
         config = Config(
@@ -273,21 +273,26 @@ class TestBackgroundIndexerLive:
                 time.sleep(0.05)
 
             # Trigger rescan — should wake from sleep
-            initial_embedded = indexer.status.messages_embedded
+            initial_completed = indexer.status.completed_at
             indexer.trigger_rescan()
 
-            # Give it a moment to process
-            time.sleep(0.5)
+            # Wait for rescan to complete
+            deadline = time.time() + 5
+            while time.time() < deadline:
+                if indexer.status.completed_at and indexer.status.completed_at != initial_completed:
+                    break
+                time.sleep(0.05)
             indexer.stop()
 
-        # Should have completed without hanging
-        assert indexer.status.sessions_processed >= 2
+        # Rescan should have completed (sessions are unchanged since mtime didn't change)
+        assert indexer.status.state == IndexerState.IDLE
+        assert (indexer.status.sessions_processed + indexer.status.sessions_unchanged) >= 2
 
     def test_last_completed_at_persists_across_restarts(self, tmp_path, monkeypatch, mock_backend, fake_sessions, fake_messages):
         """last_completed_at should be saved to SQLite and restored on next startup."""
         monkeypatch.setattr(
             "kiro_ception.cache._get_cache_db_path",
-            lambda fp: tmp_path / f"cache_{fp}.db",
+            lambda fp: tmp_path / f"cache_{hashlib.md5(fp.encode()).hexdigest()[:12]}.db",
         )
 
         config = Config(
@@ -362,7 +367,7 @@ class TestBackgroundIndexerLive:
         """When embedding config changes, rescan should switch to a new cache database."""
         monkeypatch.setattr(
             "kiro_ception.cache._get_cache_db_path",
-            lambda fp: tmp_path / f"cache_{fp}.db",
+            lambda fp: tmp_path / f"cache_{hashlib.md5(fp.encode()).hexdigest()[:12]}.db",
         )
 
         # First backend: mock with fingerprint "test:model-a:128"
@@ -479,7 +484,7 @@ class TestBackgroundIndexerLive:
         """End-to-end: trigger_reindex with a changed backend creates a new DB."""
         monkeypatch.setattr(
             "kiro_ception.cache._get_cache_db_path",
-            lambda fp: tmp_path / f"cache_{fp}.db",
+            lambda fp: tmp_path / f"cache_{hashlib.md5(fp.encode()).hexdigest()[:12]}.db",
         )
 
         backend_a = MagicMock()
@@ -572,7 +577,7 @@ class TestBackgroundIndexerLive:
         """
         monkeypatch.setattr(
             "kiro_ception.cache._get_cache_db_path",
-            lambda fp: tmp_path / f"cache_{fp}.db",
+            lambda fp: tmp_path / f"cache_{hashlib.md5(fp.encode()).hexdigest()[:12]}.db",
         )
 
         config = Config(

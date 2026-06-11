@@ -1,4 +1,4 @@
-"""System tests for the leader HTTP server and follower HTTP forwarding.
+"""System tests for the engine HTTP server and follower HTTP forwarding.
 
 Starts a real HTTP server on a random port and tests each endpoint.
 """
@@ -11,16 +11,16 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
-from kiro_ception.coordination import LeaderInstance
+from kiro_ception.coordination import EngineInstance
 
 
 @pytest.fixture
-def leader_server(tmp_path, monkeypatch):
-    """Start a real leader HTTP server on a free port."""
-    lock_path = tmp_path / "leader.lock"
-    info_path = tmp_path / "leader.json"
+def engine_server(tmp_path, monkeypatch):
+    """Start a real engine HTTP server on a free port."""
+    lock_path = tmp_path / "engine.lock"
+    info_path = tmp_path / "engine.json"
     monkeypatch.setattr("kiro_ception.coordination._get_lock_path", lambda: lock_path)
-    monkeypatch.setattr("kiro_ception.coordination._get_leader_info_path", lambda: info_path)
+    monkeypatch.setattr("kiro_ception.coordination._get_engine_info_path", lambda: info_path)
 
     # Use a random high port to avoid conflicts
     import socket
@@ -30,12 +30,12 @@ def leader_server(tmp_path, monkeypatch):
     sock.close()
 
     from kiro_ception.config import Config, ServerConfig
-    config = Config(server=ServerConfig(leader_port=port))
+    config = Config(server=ServerConfig(engine_port=port))
     monkeypatch.setattr("kiro_ception.coordination.get_config", lambda: config)
 
-    leader = LeaderInstance()
-    leader._port = port
-    leader._is_leader = True
+    engine = EngineInstance()
+    engine._port = port
+    engine._is_engine = True
 
     search_handler = MagicMock()
     search_handler.return_value = {
@@ -44,18 +44,18 @@ def leader_server(tmp_path, monkeypatch):
         "total_matches": 1,
     }
 
-    leader.start_http_server(search_handler)
+    engine.start_http_server(search_handler)
     # Give server a moment to start
     time.sleep(0.1)
 
-    yield leader, port, search_handler
+    yield engine, port, search_handler
 
-    leader._http_server.shutdown()
+    engine._http_server.shutdown()
 
 
-class TestLeaderHTTPSearch:
-    def test_search_endpoint(self, leader_server):
-        leader, port, search_handler = leader_server
+class TestEngineHTTPSearch:
+    def test_search_endpoint(self, engine_server):
+        engine, port, search_handler = engine_server
 
         resp = requests.post(
             f"http://127.0.0.1:{port}/search",
@@ -71,9 +71,9 @@ class TestLeaderHTTPSearch:
         search_handler.assert_called_once_with({"query": "test query", "max_results": 5})
 
 
-class TestLeaderHTTPStatus:
-    def test_status_endpoint(self, leader_server):
-        leader, port, _ = leader_server
+class TestEngineHTTPStatus:
+    def test_status_endpoint(self, engine_server):
+        engine, port, _ = engine_server
 
         # Mock the background indexer's status
         mock_status = MagicMock()
@@ -95,34 +95,34 @@ class TestLeaderHTTPStatus:
         assert data["sessions_total"] == 100
 
 
-class TestLeaderHTTPHealth:
-    def test_health_endpoint(self, leader_server):
-        leader, port, _ = leader_server
+class TestEngineHTTPHealth:
+    def test_health_endpoint(self, engine_server):
+        engine, port, _ = engine_server
 
         resp = requests.get(f"http://127.0.0.1:{port}/health", timeout=5)
 
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
-        assert data["role"] == "leader"
+        assert data["role"] == "engine"
         assert data["pid"] == os.getpid()
 
 
-class TestLeaderHTTPRole:
-    def test_role_endpoint(self, leader_server):
-        leader, port, _ = leader_server
+class TestEngineHTTPRole:
+    def test_role_endpoint(self, engine_server):
+        engine, port, _ = engine_server
 
         resp = requests.get(f"http://127.0.0.1:{port}/role", timeout=5)
 
         assert resp.status_code == 200
         data = resp.json()
-        assert data["role"] == "leader"
+        assert data["role"] == "engine"
         assert data["port"] == port
 
 
-class TestLeaderHTTPReindex:
-    def test_reindex_endpoint(self, leader_server):
-        leader, port, _ = leader_server
+class TestEngineHTTPReindex:
+    def test_reindex_endpoint(self, engine_server):
+        engine, port, _ = engine_server
 
         mock_indexer = MagicMock()
         with patch("kiro_ception.background_indexer.get_background_indexer", return_value=mock_indexer):
@@ -134,9 +134,9 @@ class TestLeaderHTTPReindex:
         mock_indexer.trigger_reindex.assert_called_once()
 
 
-class TestLeaderHTTPRescan:
-    def test_rescan_endpoint(self, leader_server):
-        leader, port, _ = leader_server
+class TestEngineHTTPRescan:
+    def test_rescan_endpoint(self, engine_server):
+        engine, port, _ = engine_server
 
         mock_indexer = MagicMock()
         with patch("kiro_ception.background_indexer.get_background_indexer", return_value=mock_indexer):
@@ -148,9 +148,9 @@ class TestLeaderHTTPRescan:
         mock_indexer.trigger_rescan.assert_called_once()
 
 
-class TestLeaderHTTPReloadConfig:
-    def test_reload_config_no_changes(self, leader_server):
-        leader, port, _ = leader_server
+class TestEngineHTTPReloadConfig:
+    def test_reload_config_no_changes(self, engine_server):
+        engine, port, _ = engine_server
 
         from kiro_ception.config import Config
         with patch("kiro_ception.config.reload_config", return_value=(Config(), Config())):
@@ -161,8 +161,8 @@ class TestLeaderHTTPReloadConfig:
         data = resp.json()
         assert data["status"] == "no_changes"
 
-    def test_reload_config_with_changes(self, leader_server):
-        leader, port, _ = leader_server
+    def test_reload_config_with_changes(self, engine_server):
+        engine, port, _ = engine_server
 
         changes = [{"key": "indexing.throttle_ms", "old": 0, "new": 100, "impact": "safe"}]
         from kiro_ception.config import Config
@@ -176,15 +176,15 @@ class TestLeaderHTTPReloadConfig:
         assert "indexing.throttle_ms" in data["applied"]
 
 
-class TestLeaderHTTP404:
-    def test_unknown_get_path(self, leader_server):
-        leader, port, _ = leader_server
+class TestEngineHTTP404:
+    def test_unknown_get_path(self, engine_server):
+        engine, port, _ = engine_server
 
         resp = requests.get(f"http://127.0.0.1:{port}/nonexistent", timeout=5)
         assert resp.status_code == 404
 
-    def test_unknown_post_path(self, leader_server):
-        leader, port, _ = leader_server
+    def test_unknown_post_path(self, engine_server):
+        engine, port, _ = engine_server
 
         resp = requests.post(f"http://127.0.0.1:{port}/nonexistent", json={}, timeout=5)
         assert resp.status_code == 404

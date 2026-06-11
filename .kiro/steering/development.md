@@ -98,8 +98,8 @@ tests/
 ├── test_embeddings.py                 # Backend factory, OpenAI-compatible with mocked HTTP
 ├── test_session_loading.py            # All session formats: legacy, workspace, exec logs, CLI
 ├── test_indexer.py                    # Full pipeline: index → search, SearchIndex, memory limits
-├── test_leader.py                     # Leader-follower coordination, file locks, promotion
-├── test_leader_http.py                # Real HTTP server integration (all endpoints)
+├── test_engine.py                     # Engine-follower coordination, file locks, promotion
+├── test_engine_http.py                # Real HTTP server integration (all endpoints)
 ├── test_background_indexer_live.py    # Live threading: indexer start → completion → cache verify
 ├── test_peers.py                      # Peer federation: crypto, fan-out, result merging, encryption
 ├── test_edge_cases.py                 # Edge case coverage: malformed data, boundary conditions
@@ -123,8 +123,8 @@ tests/
 
 **Tier 3 — System tests (threads, HTTP, slower):**
 - `test_indexer.py` — full indexing pipeline with fixture corpus
-- `test_leader.py` — file locks, role assignment
-- `test_leader_http.py` — real HTTP server on random port
+- `test_engine.py` — file locks, role assignment
+- `test_engine_http.py` — real HTTP server on random port
 - `test_background_indexer_live.py` — real daemon threads
 
 ### Writing Tests
@@ -154,7 +154,7 @@ tests/
 
 1. Define the function with `@mcp.tool()` decorator in `server.py`
 2. Add `_ensure_initialized()` at the top of the function
-3. Handle leader/follower routing if the tool needs indexer/cache access
+3. Handle engine/follower routing if the tool needs indexer/cache access
 4. Add corresponding HTTP endpoint in `coordination.py` if followers need it
 5. Add follower method in `FollowerInstance` class
 6. Add tests in `tests/test_tools.py`
@@ -218,11 +218,11 @@ columns, or indexes.
 ```
 src/kiro_ception/
 ├── server.py              # MCP tools + initialization (deferred startup)
-├── search.py              # SearchIndex (in-memory numpy) + hybrid search routing (leader/follower/peers)
+├── search.py              # SearchIndex (in-memory numpy) + hybrid search routing (engine/follower/peers)
 ├── background_indexer.py  # Background thread (write path)
 ├── search_utils.py        # Pure search post-processing functions (testable)
 ├── peers.py               # Cross-machine federation (fan-out, merge, Argon2id + AES-256-GCM encryption)
-├── coordination.py        # Leader-follower coordination (file locks, HTTP server, failover)
+├── coordination.py        # Engine-follower coordination (file locks, HTTP server, failover)
 ├── cache.py               # SQLite-backed storage + FTS5 full-text search
 ├── migrations.py          # Schema versioning and sequential migrations
 ├── config.py              # TOML config loading

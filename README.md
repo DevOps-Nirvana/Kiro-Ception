@@ -41,7 +41,7 @@ Search results include surrounding context (messages before/after each match), r
 - **Non-blocking**: Heavy work (indexing, embedding) runs in background daemon threads. The MCP server responds instantly.
 - **Hybrid search**: Combines semantic vector similarity (70%) with FTS5 full-text keyword search (30%). Find things by meaning *and* exact names.
 - **Recency-aware**: Recent conversations rank higher automatically. The decay curve scales with your history depth, no manual tuning.
-- **Multi-window efficient**: Leader-follower pattern means multiple Kiro windows share one index in RAM. No duplication, no conflicts.
+- **Multi-window efficient**: Engine-follower pattern means multiple Kiro windows share one index in RAM. No duplication, no conflicts.
 - **Multi-machine**: Optional peer federation searches across all your computers simultaneously with AES-256-GCM encrypted transport.
 - **Crash-safe**: SQLite with WAL mode. Lose at most one in-flight message on Ctrl+C/crash/quit.
 - **Instant cold-start**: Loads from existing cache in under 1 second. No waiting for re-indexing after restarts.
@@ -224,7 +224,7 @@ Both search tools accept:
 | Vector Search | [numpy](https://numpy.org/) | In-memory cosine similarity via dot product |
 | Data Models | [Pydantic](https://docs.pydantic.dev/) | Typed data validation and serialization |
 | Cache | SQLite (stdlib) | Persistent embedding + metadata storage (WAL mode) |
-| Process Coordination | [filelock](https://py-filelock.readthedocs.io/) | Leader-follower election via file locks |
+| Process Coordination | [filelock](https://py-filelock.readthedocs.io/) | Engine-follower election via file locks |
 | Encryption | [cryptography](https://cryptography.io/) + [argon2-cffi](https://argon2-cffi.readthedocs.io/) | AES-256-GCM peer encryption with Argon2id key derivation |
 | Build | [hatchling](https://hatch.pypa.io/) | PEP 517 build backend |
 | Package Manager | [uv](https://docs.astral.sh/uv/) | Fast dependency resolution and venv management |
@@ -313,7 +313,7 @@ On first startup, the index eagerly loads from SQLite into RAM. If embeddings ex
 
 ### Multiple windows fighting
 
-The leader-follower pattern handles this automatically. Use `get_config` to see which process is leader. If a leader dies, the next request attempts to auto-promote a follower.
+The engine-follower pattern handles this automatically. Use `get_config` to see which process is engine. If a engine dies, the next request attempts to auto-promote a follower.
 
 ### Nuclear option
 
@@ -342,8 +342,8 @@ For information about where your data is being kept, call the MCP tool "get_conf
 |------|----------|
 | `~/.config/kiro-ception/config.toml` | User configuration |
 | `~/.cache/kiro-ception/cache_<hash>.db` | SQLite database (embeddings, metadata) |
-| `~/.cache/kiro-ception/leader.lock` | Leader election file lock |
-| `~/.cache/kiro-ception/leader.json` | Leader port/PID info for followers |
+| `~/.cache/kiro-ception/engine.lock` | Engine election file lock |
+| `~/.cache/kiro-ception/engine.json` | Engine port/PID info for followers |
 
 The cache DB filename includes a hash of the backend configuration. Changing model/backend/dimensions creates a new DB file (old ones are preserved for rollback).
 

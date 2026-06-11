@@ -23,7 +23,7 @@ check that Ollama is up and the model is pulled (`ollama pull <model>`).
 - **Subsequent startups**: <2 seconds (all sessions tracked via mtime)
 - **Search latency**: <10ms (numpy dot product against in-memory matrix)
 - **Matrix refresh**: every 60 seconds (picks up newly embedded messages)
-- **Cold-start**: Eager load from existing SQLite cache on leader init (<1s if prior data exists)
+- **Cold-start**: Eager load from existing SQLite cache on engine init (<1s if prior data exists)
 - **Periodic rescan**: every 10 minutes (checks for new/changed session files)
 
 First-time indexing speed depends on your embedding backend and corpus size.
@@ -40,8 +40,8 @@ GPU-based models (e.g., Ollama) are slower to embed but yield better search resu
 
 All persistent data lives in `~/.cache/kiro-ception/`:
 - `cache_<hash>.db` — SQLite database (embeddings, metadata, session state, exec index)
-- `leader.lock` — File lock for leader election
-- `leader.json` — Leader port/PID info for followers
+- `engine.lock` — File lock for engine election
+- `engine.json` — Engine port/PID info for followers
 
 ## Troubleshooting
 
@@ -65,10 +65,10 @@ All persistent data lives in `~/.cache/kiro-ception/`:
 - Model/backend/dimensions changes require `rescan(full=True)`
 - The rescan interval is re-read on each loop iteration
 
-### Multiple windows / leader-follower issues
-- Use `get_config` to check which process is leader (see `instance` section)
-- If leader dies, next request from a follower auto-promotes it
-- Leader lock file: `~/.cache/kiro-ception/leader.lock`
+### Multiple windows / engine-follower issues
+- Use `get_config` to check which process is engine (see `instance` section)
+- If engine dies, next request from a follower auto-promotes it
+- Engine lock file: `~/.cache/kiro-ception/engine.lock`
 - If lock is stale (process dead), it's auto-cleaned on next startup
 
 ### Peer federation issues
