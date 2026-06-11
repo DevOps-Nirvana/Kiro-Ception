@@ -40,8 +40,8 @@ GPU-based models (e.g., Ollama) are slower to embed but yield better search resu
 
 All persistent data lives in `~/.cache/kiro-ception/`:
 - `cache_<hash>.db` — SQLite database (embeddings, metadata, session state, exec index)
-- `engine.lock` — File lock for engine election
-- `engine.json` — Engine port/PID info for followers
+- `engine.lock` — File lock for engine process
+- `engine.json` — Engine port/PID info for MCP clients
 
 ## Troubleshooting
 
@@ -65,11 +65,13 @@ All persistent data lives in `~/.cache/kiro-ception/`:
 - Model/backend/dimensions changes require `rescan(full=True)`
 - The rescan interval is re-read on each loop iteration
 
-### Multiple windows / engine-follower issues
-- Use `get_config` to check which process is engine (see `instance` section)
-- If engine dies, next request from a follower auto-promotes it
+### Multiple windows / engine process issues
+- Use `get_config` to check engine status (see `instance` section)
+- If engine dies, next MCP tool call auto-respawns it
 - Engine lock file: `~/.cache/kiro-ception/engine.lock`
-- If lock is stale (process dead), it's auto-cleaned on next startup
+- If lock is stale (process dead), it's auto-cleaned on next spawn
+- Code fingerprinting: reconnecting the MCP server restarts the engine if source has changed
+- Engine shuts down automatically when all MCP client processes exit
 
 ### Peer federation issues
 - Use `get_config` to verify `peers` section shows enabled=true and correct nodes

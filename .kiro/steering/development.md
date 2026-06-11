@@ -29,8 +29,8 @@
 
 - Package name: `kiro-ception`
 - Python module: `kiro_ception`
-- Single entrypoint: `kiro-ception` (runs the MCP server)
-- No separate CLI indexer — background indexing is built into the MCP server
+- Single entrypoint: `kiro-ception` (runs the MCP stdio proxy)
+- The engine process is spawned automatically by the MCP proxy — no separate CLI needed
 
 ## Configuration
 
@@ -98,12 +98,13 @@ tests/
 ├── test_embeddings.py                 # Backend factory, OpenAI-compatible with mocked HTTP
 ├── test_session_loading.py            # All session formats: legacy, workspace, exec logs, CLI
 ├── test_indexer.py                    # Full pipeline: index → search, SearchIndex, memory limits
-├── test_engine.py                     # Engine-follower coordination, file locks, promotion
+├── test_engine.py                     # Engine coordination, file locks
+├── test_engine_client.py              # Engine client: spawn, fingerprint, registry, retry
 ├── test_engine_http.py                # Real HTTP server integration (all endpoints)
 ├── test_background_indexer_live.py    # Live threading: indexer start → completion → cache verify
 ├── test_peers.py                      # Peer federation: crypto, fan-out, result merging, encryption
 ├── test_edge_cases.py                 # Edge case coverage: malformed data, boundary conditions
-└── test_remaining_gaps.py             # CLI extract, follower promotion, TOML loading, exec index
+└── test_remaining_gaps.py             # CLI extract, TOML loading, exec index
 ```
 
 ### Test Tiers
@@ -154,12 +155,11 @@ tests/
 
 1. Define the function with `@mcp.tool()` decorator in `server.py`
 2. Add `_ensure_initialized()` at the top of the function
-3. Handle engine/follower routing if the tool needs indexer/cache access
-4. Add corresponding HTTP endpoint in `coordination.py` if followers need it
-5. Add follower method in `FollowerInstance` class
-6. Add tests in `tests/test_tools.py`
-7. Update POWER.md tool table and trigger scenarios
-8. Update README.md management tools table
+3. Forward the request to the engine via `get_engine_client()`
+4. Add corresponding HTTP endpoint in `engine_main.py` if new functionality is needed
+5. Add tests in `tests/test_tools.py`
+6. Update POWER.md tool table and trigger scenarios
+7. Update README.md management tools table
 
 ## Adding New Config Options
 
@@ -217,12 +217,15 @@ columns, or indexes.
 
 ```
 src/kiro_ception/
-├── server.py              # MCP tools + initialization (deferred startup)
-├── search.py              # SearchIndex (in-memory numpy) + hybrid search routing (engine/follower/peers)
+├── server.py              # MCP stdio proxy — thin, no heavy deps
+├── engine_main.py         # Standalone engine process (HTTP server, indexer, search)
+├── engine_client.py       # Client: spawn, discover, fingerprint, health check, retry
+├── dashboard.py           # HTML dashboard served by engine at GET /
+├── search.py              # SearchIndex (in-memory numpy) + hybrid search + peers
 ├── background_indexer.py  # Background thread (write path)
 ├── search_utils.py        # Pure search post-processing functions (testable)
 ├── peers.py               # Cross-machine federation (fan-out, merge, Argon2id + AES-256-GCM encryption)
-├── coordination.py        # Engine-follower coordination (file locks, HTTP server, failover)
+├── coordination.py        # Legacy: file lock utilities, helper functions
 ├── cache.py               # SQLite-backed storage + FTS5 full-text search
 ├── migrations.py          # Schema versioning and sequential migrations
 ├── config.py              # TOML config loading
