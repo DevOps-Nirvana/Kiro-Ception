@@ -8,11 +8,10 @@
 #   ./scripts/run_mutmut.sh kiro_ception.search_utils --max-children 4
 #
 # What this does:
-#   1. Installs mutmut if not already available
-#   2. Temporarily renames test files containing hypothesis (@given) to .bak
+#   1. Temporarily renames test files containing hypothesis (@given) to .bak
 #      so pytest/mutmut never sees them (avoids fork-incompatibility crash)
-#   3. Clears mutmut state and runs mutation testing
-#   4. Restores all original test files (even on failure/interrupt)
+#   2. Clears mutmut state and runs mutation testing
+#   3. Restores all original test files (even on failure/interrupt)
 #
 # Why: mutmut v3 uses fork() for isolation. Hypothesis detects the PID change
 # and raises FailedHealthCheck(differing_executors), crashing the test run.
@@ -44,13 +43,7 @@ TESTS_DIR="$PROJECT_DIR/tests"
 echo "=== Mutation testing: $MODULE_PATTERN ==="
 echo ""
 
-# --- Step 1: Ensure mutmut is available ---
-if ! uv run python -c "import mutmut" 2>/dev/null; then
-    echo "Installing mutmut..."
-    uv add --dev mutmut 2>&1 | tail -1
-fi
-
-# --- Step 2: Temporarily hide hypothesis test files ---
+# --- Step 1: Temporarily hide hypothesis test files ---
 echo "Excluding hypothesis test files..."
 
 EXCLUDED_FILES=()
@@ -63,7 +56,7 @@ done
 
 echo "  Excluded ${#EXCLUDED_FILES[@]} files containing hypothesis"
 
-# --- Step 3: Restore on exit (trap) ---
+# --- Step 2: Restore on exit (trap) ---
 restore_tests() {
     echo ""
     echo "Restoring hypothesis test files..."
@@ -76,7 +69,7 @@ restore_tests() {
 }
 trap restore_tests EXIT
 
-# --- Step 4: Verify remaining tests pass ---
+# --- Step 3: Verify remaining tests pass ---
 echo ""
 echo "Verifying remaining tests pass..."
 REMAINING=$(find "$TESTS_DIR" -name "test_*.py" | wc -l | tr -d ' ')
@@ -88,14 +81,14 @@ if ! uv run pytest tests/ -x -q --tb=line 2>&1 | tail -3; then
     exit 1
 fi
 
-# --- Step 5: Clear mutmut state and run ---
+# --- Step 4: Clear mutmut state and run ---
 echo ""
 echo "Running mutmut against: $MODULE_PATTERN"
 echo "---"
 rm -rf "$PROJECT_DIR/mutants/"
 uv run mutmut run "$MODULE_PATTERN" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} 2>&1 || true
 
-# --- Step 6: Show results ---
+# --- Step 5: Show results ---
 echo ""
 echo "=== Results for $MODULE_PATTERN ==="
 echo ""

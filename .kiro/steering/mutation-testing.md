@@ -8,19 +8,7 @@ inclusion: manual
 
 Mutation testing validates test quality by injecting small bugs (mutants) into source code and checking whether the test suite catches them. A surviving mutant means no test failed despite the introduced bug — a gap in coverage.
 
-We use **mutmut v3+** which is configured in `pyproject.toml` and uses a fork-based trampoline execution model.
-
-mutmut is an **on-demand tool**, not a permanent dev dependency. Install it when you need it:
-
-```bash
-uv add --dev mutmut
-```
-
-Or run it without installing via:
-
-```bash
-uvx mutmut run "kiro_ception.tool_summaries*"
-```
+We use **mutmut v3+** which is configured in `pyproject.toml` and uses a fork-based trampoline execution model. It's included as a dev dependency — `uv sync` installs it automatically.
 
 ## Configuration
 
@@ -37,6 +25,18 @@ pytest_add_cli_args_test_selection = ["tests/test_tool_summaries.py"]
 ```
 
 ## Running
+
+The easiest way is the wrapper script which handles hypothesis incompatibility automatically:
+
+```bash
+./scripts/run_mutmut.sh kiro_ception.search_utils
+./scripts/run_mutmut.sh "kiro_ception.tool_summaries*"
+./scripts/run_mutmut.sh kiro_ception.ide_loader --max-children 4
+```
+
+The script temporarily renames hypothesis test files (to `.mutmut_bak`), runs mutmut, then restores them — even on Ctrl+C or failure.
+
+### Direct mutmut usage (without hypothesis workaround)
 
 ```bash
 # Mutate a single module (recommended — fast, focused)
