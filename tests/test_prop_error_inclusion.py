@@ -162,12 +162,22 @@ class TestErrorInclusionProperty:
         self, action_type: str, action_state: str, error_msg: str, error_field: str
     ):
         """For any failed/error action, generate_tool_summary SHALL produce a
-        summary whose outcome portion includes the error message (truncated to 200 chars)."""
+        summary whose outcome portion includes the error message (truncated to 200 chars).
+        Whitespace-only errors are normalized away and result in plain state."""
         action = make_failed_action(action_type, action_state, error_field, error_msg)
         config = ToolSummaryConfig(include_meaningful_output=False)
 
         summary = generate_tool_summary(action, config)
         assert summary is not None, "Summary should not be None for non-excluded, non-say action"
+
+        # After normalization, check if the error is effectively empty
+        normalized_error = error_msg.replace("\n", " ").replace("\r", " ").strip()
+
+        if not normalized_error:
+            # Whitespace-only error → outcome is just the state with no ": "
+            assert f"→ {action_state}" in summary
+            assert f"→ {action_state}: " not in summary
+            return
 
         # The summary should contain the error state prefix
         assert f"→ {action_state}: " in summary, (
