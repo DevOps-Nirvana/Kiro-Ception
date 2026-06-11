@@ -85,59 +85,12 @@ class TestCLIExtractTextFromContent:
 
 
 class TestFollowerPromotion:
-    """Test the search() path where a follower fails to reach engine and promotes."""
+    """Removed: follower promotion no longer exists in the search layer.
 
-    def test_follower_promotes_on_engine_failure(self, tmp_path, monkeypatch):
-        """When follower can't reach engine, it should promote to engine."""
-        lock_path = tmp_path / "engine.lock"
-        info_path = tmp_path / "engine.json"
-        monkeypatch.setattr("kiro_ception.coordination._get_lock_path", lambda: lock_path)
-        monkeypatch.setattr("kiro_ception.coordination._get_engine_info_path", lambda: info_path)
-
-        from kiro_ception.coordination import InstanceManager
-
-        # Set up a manager in follower state with a dead engine
-        manager = InstanceManager()
-        manager._role = "follower"
-
-        # Mock follower whose search always fails
-        mock_follower = MagicMock()
-        mock_follower.search.side_effect = ConnectionError("Connection refused")
-        manager._follower = mock_follower
-
-        # Mock the search handler and indexer for after promotion
-        search_handler = MagicMock()
-
-        with (
-            patch("kiro_ception.search.get_instance_manager", return_value=manager),
-            patch("kiro_ception.server._initialized", True),
-            patch("kiro_ception.search.get_background_indexer") as mock_get_indexer,
-            patch("kiro_ception.search.engine_search") as mock_engine_search,
-        ):
-            mock_get_indexer.return_value.start = MagicMock()
-            mock_engine_search.return_value = {
-                "results": [], "query": "test", "total_matches": 0
-            }
-
-            from kiro_ception.search import search
-            from kiro_ception.models import Source
-
-            result = search(
-                query="test",
-                workspace=None,
-                source=None,
-                after=None,
-                before=None,
-                context_size=3,
-                threshold=0.2,
-                max_results=10,
-                offset=0,
-            )
-
-        # Should have attempted promotion
-        # Either promoted successfully and searched, or returned error
-        assert isinstance(result, dict)
-        assert "query" in result or "error" in result
+    The engine process is always the engine — there's no follower state in search.py.
+    The MCP client handles engine lifecycle via engine_client.py.
+    """
+    pass
 
 
 # --- get_config with real TOML file ---

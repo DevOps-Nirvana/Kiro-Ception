@@ -11,7 +11,6 @@ import numpy as np
 
 from .background_indexer import get_background_indexer
 from .config import get_config
-from .coordination import get_instance_manager
 from .embeddings import get_embedding_backend
 from .models import Source
 from .peers import fan_out_search, merge_peer_results
@@ -433,46 +432,11 @@ def search(
     offset: int,
     include_tool_context: bool = False,
 ) -> dict:
-    """Search implementation with engine/follower routing.
+    """Search implementation — always runs as the engine.
 
-    Engine: searches directly against SQLite cache.
-    Follower: forwards to engine via HTTP. On failure, attempts promotion.
+    Searches directly against the in-memory index and SQLite cache,
+    then fans out to peers if configured.
     """
-    manager = get_instance_manager()
-
-    if not manager.is_engine:
-        # Follower: forward to engine
-        follower = manager.follower_instance
-        if follower:
-            try:
-                return follower.search({
-                    "query": query,
-                    "workspace": workspace,
-                    "source": source.value if source else None,
-                    "after": after,
-                    "before": before,
-                    "context_size": context_size,
-                    "threshold": threshold,
-                    "max_results": max_results,
-                    "offset": offset,
-                    "include_tool_context": include_tool_context,
-                })
-            except Exception:
-                # Engine unreachable — attempt promotion
-                if manager.promote_to_engine(handle_search_request):
-                    # We're now engine, start indexer
-                    indexer = get_background_indexer()
-                    indexer.start()
-                    # Fall through to engine search below
-                else:
-                    return {
-                        "results": [],
-                        "query": query,
-                        "total_matches": 0,
-                        "error": "Engine unavailable and could not promote",
-                        "hint": "Try again in a moment.",
-                    }
-
     # Engine path: search directly
     local_response = engine_search(query, workspace, source, after, before,
                                    context_size, threshold, max_results, offset,

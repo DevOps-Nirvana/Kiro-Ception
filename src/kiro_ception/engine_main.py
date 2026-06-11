@@ -368,11 +368,11 @@ def _build_request_handler(search_handler, config_handler, indexer_getter, follo
 
         def _send_dashboard(self):
             """Serve the status dashboard."""
-            from .coordination import _DASHBOARD_HTML
+            from .dashboard import DASHBOARD_HTML
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
-            self.wfile.write(_DASHBOARD_HTML.encode("utf-8"))
+            self.wfile.write(DASHBOARD_HTML.encode("utf-8"))
 
     return EngineRequestHandler
 
