@@ -57,15 +57,9 @@ Search results include surrounding context (messages before/after each match), r
 - **Python 3.11+** (3.12, 3.13 also supported and tested officially)
 - **[uv](https://docs.astral.sh/uv/getting-started/installation/)** - fast Python package manager
 
-### Install as a Kiro Power (Recommended)
+### Install as a Kiro Power from Local Clone (Recommended)
 
-1. In Kiro IDE: Powers panel → **Add power from GitHub**
-2. Enter: `https://github.com/DevOps-Nirvana/Kiro-Ception`
-3. Click Install — the power activates automatically when you mention "recall", "remember", or "past conversation"
-
-The power registers itself and "Check for updates" in the Powers panel will pull the latest version whenever you want.
-
-### Install from Source
+Clone the repo and install as a local power. This gives you immediate updates via `git pull` and the full Power experience (keyword triggers, automatic activation, POWER.md guidance):
 
 ```bash
 git clone https://github.com/DevOps-Nirvana/Kiro-Ception.git
@@ -73,13 +67,33 @@ cd Kiro-Ception
 uv sync
 ```
 
-Then register it as a power: Powers panel → **Add power from Local Path** → select the `Kiro-Ception` folder you just cloned.
+Then in Kiro IDE: Powers panel → **Add power from Local Path** → select the `Kiro-Ception` folder you just cloned.
 
-### Manual MCP Setup (Alternative)
+To update later:
 
-If you installed from source or prefer manual configuration, add to your Kiro MCP configuration (`~/.kiro/settings/mcp.json`):
+```bash
+cd Kiro-Ception
+git pull
+uv sync
+```
 
-> **Warning:** Installing as a Power (above) is strongly recommended. The POWER.md file contains keyword triggers and usage guidance that help Kiro automatically activate search when you reference past conversations. With MCP-only setup, you'll need to explicitly ask Kiro to search history, it won't trigger on its own from phrases like "as we discussed" or "what did we do last time".
+Kiro picks up changes on the next MCP server restart, either in the form of you restarting Kiro, or you can "disable" the MCP tool and re-enable it.
+
+### Install as a Kiro Power from GitHub (Alternative)
+
+If you prefer not to manage a local clone:
+
+1. In Kiro IDE: Powers panel → **Add power from GitHub**
+2. Enter: `https://github.com/DevOps-Nirvana/Kiro-Ception`
+3. Click Install
+
+> **Note:** Due to current bugs in how Kiro handles MCP servers within Powers installed from GitHub, the local clone method above is more reliable. The GitHub install may have issues with server startup or reconnection and/or with updating due to a possible split-brain scenario.
+
+### Manual MCP Setup (Last Resort)
+
+If you prefer manual configuration without the Power wrapper, add to your Kiro MCP configuration (`~/.kiro/settings/mcp.json`):
+
+> **Warning:** Installing as a Power (above) is strongly recommended. The POWER.md file contains keyword triggers and usage guidance that help Kiro automatically activate search when you reference past conversations. With MCP-only setup, you'll need to explicitly ask Kiro to search history — it won't trigger on its own from phrases like "as we discussed" or "what did we do last time".
 
 ```json
 {
@@ -106,7 +120,7 @@ Alternatively, if you've cloned the repo locally:
 }
 ```
 
-Replace `/path/to/Kiro-Ception` with the actual clone location. Usually just saving your mcp will do it, but if needed, restart Kiro.
+Replace `/path/to/Kiro-Ception` with the actual clone location. Usually just saving your mcp config will do it, but if needed, restart Kiro.
 
 ## Configuration
 
