@@ -125,6 +125,8 @@ def _extract_outcome(action: dict) -> str:
 
     if state == "failed":
         error_msg = _get_error_message(action)
+        # Normalize: collapse newlines into spaces and strip whitespace
+        error_msg = error_msg.replace("\n", " ").replace("\r", " ").strip()
         if error_msg:
             # Truncate error message to 200 chars
             if len(error_msg) > 200:
@@ -134,6 +136,8 @@ def _extract_outcome(action: dict) -> str:
 
     if state == "error":
         error_msg = _get_error_message(action)
+        # Normalize: collapse newlines into spaces and strip whitespace
+        error_msg = error_msg.replace("\n", " ").replace("\r", " ").strip()
         if error_msg:
             if len(error_msg) > 200:
                 error_msg = error_msg[:197] + "..."

@@ -511,3 +511,263 @@ class TestBuildContextWindowContentTier:
         # Verify the timestamps are in increasing order (proxy for message_index order)
         timestamps = [m["timestamp"] for m in context]
         assert timestamps == sorted(timestamps)
+
+
+# --- Mutation-targeted boundary tests ---
+
+
+class TestParseDateBoundaries:
+    """Mutation targets: Z-suffix handling and lowercase z."""
+
+    def test_z_suffix_is_case_sensitive(self):
+        """parse_date should handle uppercase Z but lowercase z should fail gracefully."""
+        # Uppercase Z works (standard ISO 8601)
+        result = parse_date("2026-06-01T14:30:00Z")
+        assert result == datetime(2026, 6, 1, 14, 30, 0)
+
+        # Lowercase z is NOT valid ISO 8601 — should return None or handle
+        # Python 3.11+ fromisoformat doesn't handle lowercase z
+        result_lower = parse_date("2026-06-01T14:30:00z")
+        # The replace("Z", ...) doesn't catch lowercase z, and fromisoformat
+        # doesn't handle it either, so this should return None
+        assert result_lower is None
+
+    def test_z_suffix_with_milliseconds(self):
+        """Z suffix with fractional seconds."""
+        result = parse_date("2026-06-01T14:30:00.123Z")
+        assert result is not None
+        assert result.second == 0
+        assert result.microsecond == 123000
+
+    def test_z_in_middle_of_string_not_replaced(self):
+        """A 'Z' that's part of the date value (not a suffix) shouldn't cause issues."""
+        # This isn't valid ISO but shouldn't crash
+        result = parse_date("Zone5")
+        assert result is None
+
+
+class TestDeduplicateResultsEqualScores:
+    """Mutation target: r["score"] > kept[-1]["score"] → >="""
+
+    def test_equal_scores_keeps_first_encountered(self):
+        """When two overlapping results have the same score, keep the first (lower index)."""
+        results = [
+            {"session_id": "s1", "message_index": 0, "score": 0.8},
+            {"session_id": "s1", "message_index": 3, "score": 0.8},  # same score, overlapping
+        ]
+        deduped = deduplicate_results(results, context_size=3)
+        # With `>`, equal score does NOT replace → keeps first (index 0)
+        # With `>=`, equal score DOES replace → keeps second (index 3)
+        assert len(deduped) == 1
+        assert deduped[0]["message_index"] == 0  # first one kept
+
+    def test_slightly_higher_score_replaces(self):
+        """When the overlapping result has a higher score, it replaces."""
+        results = [
+            {"session_id": "s1", "message_index": 0, "score": 0.8},
+            {"session_id": "s1", "message_index": 3, "score": 0.81},
+        ]
+        deduped = deduplicate_results(results, context_size=3)
+        assert len(deduped) == 1
+        assert deduped[0]["score"] == 0.81  # higher score wins
+
+
+class TestGenerateHintExactText:
+    """Mutation target: exact hint text for zero results."""
+
+    def test_zero_results_exact_text(self):
+        """The zero-results hint must contain the exact expected text."""
+        hint = generate_hint(total=0, offset=0, count=0, max_results=10, has_more=False)
+        assert hint == "No matches found. Try different search terms or lower the threshold."
+
+    def test_all_results_shown_exact_text(self):
+        hint = generate_hint(total=5, offset=0, count=5, max_results=10, has_more=False)
+        assert hint == "Showing all 5 matches."
+
+    def test_has_more_exact_format(self):
+        hint = generate_hint(total=25, offset=0, count=10, max_results=10, has_more=True)
+        assert hint == "Showing 1-10 of 25. Use offset: 10 for more."
+
+    def test_final_page_exact_format(self):
+        hint = generate_hint(total=25, offset=20, count=5, max_results=10, has_more=False)
+        assert hint == "Showing 21-25 of 25 (final page)."
+
+
+class TestApplyOverflowLogicBoundaries:
+    """Mutation targets in _apply_overflow_logic."""
+
+    def test_exactly_20_messages_not_trimmed(self):
+        """Exactly 20 messages should be returned as-is (no overflow)."""
+        from kiro_ception.search_utils import _apply_overflow_logic
+        import time
+        base_ts = time.time()
+
+        messages = []
+        for i in range(20):
+            messages.append({
+                "uuid": f"msg-{i}",
+                "role": "assistant",
+                "searchable_text": f"Content {i}",
+                "timestamp": base_ts + i,
+                "message_index": i,
+                "content_tier": "tool_context" if i < 10 else "conversation",
+            })
+        result = _apply_overflow_logic(messages, "msg-15")
+        assert len(result) == 20  # No trimming at exactly 20
+
+    def test_21_messages_trimmed_to_20(self):
+        """21 messages should be trimmed to exactly 20."""
+        from kiro_ception.search_utils import _apply_overflow_logic
+        import time
+        base_ts = time.time()
+
+        messages = []
+        for i in range(21):
+            messages.append({
+                "uuid": f"msg-{i}",
+                "role": "assistant",
+                "searchable_text": f"Content {i}",
+                "timestamp": base_ts + i,
+                "message_index": i,
+                "content_tier": "tool_context" if i < 10 else "conversation",
+            })
+        result = _apply_overflow_logic(messages, "msg-15")
+        assert len(result) == 20
+
+    def test_missing_content_tier_defaults_to_conversation(self):
+        """Messages without content_tier field are treated as conversation (protected)."""
+        from kiro_ception.search_utils import _apply_overflow_logic
+        import time
+        base_ts = time.time()
+
+        # 22 messages: 10 with explicit tool_context, 12 without content_tier key
+        messages = []
+        for i in range(22):
+            msg = {
+                "uuid": f"msg-{i}",
+                "role": "assistant",
+                "searchable_text": f"Content {i}",
+                "timestamp": base_ts + i,
+                "message_index": i,
+            }
+            if i < 10:
+                msg["content_tier"] = "tool_context"
+            # No content_tier key for messages 10-21 → should default to "conversation"
+            messages.append(msg)
+
+        result = _apply_overflow_logic(messages, "msg-15")
+        # 12 "conversation" (no tier) + up to 8 tool_context = 20
+        assert len(result) == 20
+        # All messages without content_tier are retained (treated as conversation)
+        no_tier_msgs = [m for m in result if "content_tier" not in m]
+        assert len(no_tier_msgs) == 12
+
+    def test_num_to_drop_equals_droppable_count(self):
+        """When num_to_drop == len(droppable), all droppable are dropped."""
+        from kiro_ception.search_utils import _apply_overflow_logic
+        import time
+        base_ts = time.time()
+
+        # 22 messages: 20 conversation + 2 tool_context
+        # num_to_drop = 22 - 20 = 2, droppable = 2 → exactly equal
+        messages = []
+        for i in range(22):
+            messages.append({
+                "uuid": f"msg-{i}",
+                "role": "assistant",
+                "searchable_text": f"Content {i}",
+                "timestamp": base_ts + i,
+                "message_index": i,
+                "content_tier": "tool_context" if i < 2 else "conversation",
+            })
+        result = _apply_overflow_logic(messages, "msg-10")
+        assert len(result) == 20
+        # Both tool_context messages should be dropped
+        tool_msgs = [m for m in result if m.get("content_tier") == "tool_context"]
+        assert len(tool_msgs) == 0
+
+    def test_result_sorted_by_message_index(self):
+        """After overflow, messages must be sorted by message_index."""
+        from kiro_ception.search_utils import _apply_overflow_logic
+        import time
+        base_ts = time.time()
+
+        # 22 messages with tool_context scattered throughout
+        messages = []
+        for i in range(22):
+            messages.append({
+                "uuid": f"msg-{i}",
+                "role": "assistant",
+                "searchable_text": f"Content {i}",
+                "timestamp": base_ts + i,
+                "message_index": i,
+                "content_tier": "tool_context" if i % 3 == 0 else "conversation",
+            })
+        result = _apply_overflow_logic(messages, "msg-11")
+        indices = [m["message_index"] for m in result]
+        assert indices == sorted(indices)
+
+
+class TestBuildContextWindowOutputFormat:
+    """Mutation targets: output dict key names."""
+
+    def test_output_has_role_key(self):
+        """Each context message must have a 'role' key (not 'ROLE' or 'XXroleXX')."""
+        import time
+        messages = [{
+            "uuid": "m1",
+            "role": "user",
+            "searchable_text": "hello",
+            "timestamp": time.time(),
+            "message_index": 0,
+        }]
+        context = build_context_window(messages, "m1", context_size=3)
+        assert len(context) == 1
+        assert "role" in context[0]
+        assert context[0]["role"] == "user"
+
+    def test_overflow_threshold_is_20_not_21(self):
+        """Overflow triggers at >20, not >=20 or >21."""
+        import time
+        base_ts = time.time()
+
+        # 21 messages (all tool_context except match) → should trigger overflow
+        messages = []
+        for i in range(21):
+            messages.append({
+                "uuid": f"msg-{i}",
+                "role": "assistant",
+                "searchable_text": f"Content {i}",
+                "timestamp": base_ts + i,
+                "message_index": i,
+                "content_tier": "tool_context",
+            })
+        context = build_context_window(messages, "msg-10", context_size=10)
+        # 21 > 20 → overflow triggered → trimmed to 20
+        assert len(context) == 20
+
+        # Exactly 20 messages → should NOT trigger overflow
+        messages_20 = messages[:20]
+        context_20 = build_context_window(messages_20, "msg-10", context_size=10)
+        assert len(context_20) == 20  # All kept, no overflow
+
+    def test_match_uuid_passed_to_overflow(self):
+        """build_context_window passes match_uuid to overflow logic (not None)."""
+        import time
+        base_ts = time.time()
+
+        # 22 tool_context messages, match at index 11
+        messages = []
+        for i in range(22):
+            messages.append({
+                "uuid": f"msg-{i}",
+                "role": "assistant",
+                "searchable_text": f"Content {i}",
+                "timestamp": base_ts + i,
+                "message_index": i,
+                "content_tier": "tool_context",
+            })
+        context = build_context_window(messages, "msg-11", context_size=11)
+        # The match must be present (not dropped by overflow)
+        match_msgs = [m for m in context if m["is_match"]]
+        assert len(match_msgs) == 1

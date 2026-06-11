@@ -9,6 +9,9 @@ from kiro_ception.tool_summaries import (
     _describe_action,
     _extract_meaningful_output,
     _extract_outcome,
+    _count_search_results,
+    _get_error_message,
+    _looks_meaningful,
     generate_tool_summary,
 )
 
@@ -435,3 +438,466 @@ class TestExtractMeaningfulOutput:
         result = _extract_meaningful_output(action)
         assert len(result) <= 500
         assert result.endswith("...")
+
+
+# --- Boundary and edge case tests (from mutation testing) ---
+
+
+class TestGenerateToolSummaryBoundaries:
+    """Precise boundary tests for generate_tool_summary."""
+
+    def test_missing_action_type_key_produces_valid_summary(self):
+        """When actionType is completely absent, summary should still work."""
+        action = {
+            "actionState": "completed",
+            "input": {"path": "/foo.txt"},
+            "output": {"filePath": "/foo.txt"},
+        }
+        config = ToolSummaryConfig(include_meaningful_output=False)
+        result = generate_tool_summary(action, config)
+        assert result is not None
+        assert result.startswith("[")
+        assert "→" in result
+
+    def test_missing_action_type_uses_empty_string_in_brackets(self):
+        """The actionType in brackets should be empty string, not 'None'."""
+        action = {"actionState": "completed", "input": {}, "output": {}}
+        config = ToolSummaryConfig(include_meaningful_output=False)
+        result = generate_tool_summary(action, config)
+        assert result is not None
+        assert result.startswith("[] ")
+        assert "None" not in result
+
+    def test_summary_truncated_to_exact_max_length(self):
+        """When summary exceeds max_summary_length, result length == max_summary_length."""
+        long_path = "/" + "x" * 900
+        action = {
+            "actionType": "readFile",
+            "actionState": "completed",
+            "input": {"path": long_path},
+            "output": {"filePath": long_path},
+        }
+        config = ToolSummaryConfig(max_summary_length=100, include_meaningful_output=False)
+        result = generate_tool_summary(action, config)
+        assert result is not None
+        assert len(result) == 100
+        assert result.endswith("...")
+
+    def test_summary_at_exact_max_not_truncated(self):
+        """A summary exactly at max_summary_length should NOT have '...' appended."""
+        action = {
+            "actionType": "readFile",
+            "actionState": "completed",
+            "input": {"path": "/short.txt"},
+            "output": {},
+        }
+        config_big = ToolSummaryConfig(max_summary_length=5000, include_meaningful_output=False)
+        natural_result = generate_tool_summary(action, config_big)
+        config_exact = ToolSummaryConfig(
+            max_summary_length=len(natural_result), include_meaningful_output=False
+        )
+        result = generate_tool_summary(action, config_exact)
+        assert result == natural_result
+        assert not result.endswith("...")
+
+    def test_summary_one_over_max_gets_truncated(self):
+        """A summary one char over max_summary_length must be truncated."""
+        action = {
+            "actionType": "readFile",
+            "actionState": "completed",
+            "input": {"path": "/short.txt"},
+            "output": {},
+        }
+        config_big = ToolSummaryConfig(max_summary_length=5000, include_meaningful_output=False)
+        natural_result = generate_tool_summary(action, config_big)
+        config_tight = ToolSummaryConfig(
+            max_summary_length=len(natural_result) - 1, include_meaningful_output=False
+        )
+        result = generate_tool_summary(action, config_tight)
+        assert len(result) == len(natural_result) - 1
+        assert result.endswith("...")
+
+    def test_newline_in_description_replaced_with_space(self):
+        """A description containing \\n should have it replaced with a space."""
+        action = {
+            "actionType": "readFile",
+            "actionState": "completed",
+            "input": {"path": "/foo\n/bar.txt"},
+            "output": {},
+        }
+        config = ToolSummaryConfig(include_meaningful_output=False)
+        result = generate_tool_summary(action, config)
+        first_line = result.split("\n")[0]
+        assert "/foo /bar.txt" in first_line
+        assert "\n" not in first_line
+
+    def test_carriage_return_in_description_replaced_with_space(self):
+        """A description containing \\r should have it replaced with a space."""
+        action = {
+            "actionType": "readFile",
+            "actionState": "completed",
+            "input": {"path": "/foo\r/bar.txt"},
+            "output": {},
+        }
+        config = ToolSummaryConfig(include_meaningful_output=False)
+        result = generate_tool_summary(action, config)
+        first_line = result.split("\n")[0]
+        assert "/foo /bar.txt" in first_line
+        assert "\r" not in first_line
+
+    def test_mixed_newlines_all_normalized(self):
+        """Both \\n and \\r in description become spaces."""
+        action = {
+            "actionType": "execute_pwsh",
+            "actionState": "completed",
+            "input": {"command": "echo\nhello\rworld"},
+            "output": {"exitCode": 0},
+        }
+        config = ToolSummaryConfig(include_meaningful_output=False)
+        result = generate_tool_summary(action, config)
+        first_line = result.split("\n")[0]
+        assert "\n" not in first_line
+        assert "\r" not in first_line
+        assert "echo hello world" in first_line
+
+    def test_empty_description_fallback_to_no_input(self):
+        """When description strips to empty, exact '(no input)' text is used."""
+        action = {
+            "actionType": "readFile",
+            "actionState": "completed",
+            "input": {"path": "\n\r\n"},
+            "output": {"filePath": "\r\n"},
+        }
+        config = ToolSummaryConfig(include_meaningful_output=False)
+        result = generate_tool_summary(action, config)
+        assert "(no input)" in result
+        assert "(NO INPUT)" not in result
+
+
+class TestDescribeActionBoundaries:
+    """Precise boundary tests for _describe_action."""
+
+    def test_long_command_exactly_100_chars(self):
+        """A 150-char command truncates to exactly 97 + '...' = 100 chars."""
+        long_command = "a" * 150
+        action = {
+            "actionType": "execute_pwsh",
+            "input": {"command": long_command},
+            "output": {"exitCode": 0},
+        }
+        description = _describe_action("execute_pwsh", action)
+        command_part = description.split(" (exit")[0]
+        assert len(command_part) == 100
+        assert command_part == "a" * 97 + "..."
+
+    def test_command_at_exactly_100_chars_not_truncated(self):
+        """A 100-char command should NOT be truncated."""
+        command = "b" * 100
+        action = {"actionType": "execute_pwsh", "input": {"command": command}, "output": {"exitCode": 0}}
+        description = _describe_action("execute_pwsh", action)
+        assert "b" * 100 in description
+        assert "..." not in description
+
+    def test_command_at_101_chars_is_truncated(self):
+        """A 101-char command should be truncated."""
+        command = "c" * 101
+        action = {"actionType": "execute_pwsh", "input": {"command": command}, "output": {}}
+        description = _describe_action("execute_pwsh", action)
+        assert description == "c" * 97 + "..."
+
+    def test_exit_code_from_snake_case_field(self):
+        """Fallback field 'exit_code' (snake_case) should be used when 'exitCode' absent."""
+        action = {"actionType": "execute_pwsh", "input": {"command": "ls"}, "output": {"exit_code": 7}}
+        description = _describe_action("execute_pwsh", action)
+        assert "(exit 7)" in description
+
+    def test_no_exit_code_fields_omits_exit_info(self):
+        """When neither exit code field is present, no '(exit N)' in output."""
+        action = {"actionType": "execute_pwsh", "input": {"command": "ls"}, "output": {}}
+        description = _describe_action("execute_pwsh", action)
+        assert description == "ls"
+
+    def test_long_prompt_exactly_100_chars(self):
+        """A 200-char prompt truncates to exactly 97 + '...' = 100 chars."""
+        long_prompt = "p" * 200
+        action = {"actionType": "invoke_sub_agent", "input": {"name": "agent", "prompt": long_prompt}, "output": {}}
+        description = _describe_action("invoke_sub_agent", action)
+        prompt_in_desc = description.split('"')[1]
+        assert len(prompt_in_desc) == 100
+        assert prompt_in_desc == "p" * 97 + "..."
+
+    def test_prompt_at_100_chars_not_truncated(self):
+        """A 100-char prompt should NOT be truncated."""
+        prompt = "q" * 100
+        action = {"actionType": "invoke_sub_agent", "input": {"name": "agent", "prompt": prompt}, "output": {}}
+        description = _describe_action("invoke_sub_agent", action)
+        prompt_in_desc = description.split('"')[1]
+        assert prompt_in_desc == "q" * 100
+
+    def test_unrecognized_action_serializes_to_exactly_100_chars(self):
+        """Unrecognized action types serialize input JSON, truncated at 100."""
+        long_value = "v" * 200
+        action = {"actionType": "unknown", "input": {"key": long_value}, "output": {}}
+        description = _describe_action("unknown", action)
+        assert len(description) == 100
+        assert description.endswith("...")
+
+    def test_short_input_not_truncated(self):
+        """Short input JSON should not be truncated."""
+        action = {"actionType": "unknown", "input": {"x": 1}, "output": {}}
+        description = _describe_action("unknown", action)
+        assert description == '{"x": 1}'
+
+    def test_missing_input_key_does_not_crash(self):
+        """Should not crash when 'input' key is missing."""
+        action = {"actionType": "readFile", "output": {"filePath": "/foo.txt"}}
+        description = _describe_action("readFile", action)
+        assert "/foo.txt" in description
+
+    def test_missing_output_key_does_not_crash(self):
+        """Should not crash when 'output' key is missing."""
+        action = {"actionType": "readFile", "input": {"path": "/bar.txt"}}
+        description = _describe_action("readFile", action)
+        assert "/bar.txt" in description
+
+    def test_readfile_prefers_input_path_over_output(self):
+        """readFile prefers input.path over output.filePath."""
+        action = {"actionType": "readFile", "input": {"path": "/input.ts"}, "output": {"filePath": "/output.ts"}}
+        description = _describe_action("readFile", action)
+        assert "/input.ts" in description
+
+    def test_grep_search_shows_result_count_from_array(self):
+        """grep_search shows count from results array length."""
+        action = {"actionType": "grep_search", "input": {"query": "TODO"}, "output": {"results": [1, 2, 3]}}
+        description = _describe_action("grep_search", action)
+        assert "(3 results)" in description
+
+
+class TestExtractOutcomeBoundaries:
+    """Precise boundary tests for _extract_outcome."""
+
+    def test_error_at_exactly_200_chars_not_truncated(self):
+        """A 200-char error message should NOT be truncated."""
+        error = "F" * 200
+        action = {"actionState": "failed", "output": {"error": error}}
+        outcome = _extract_outcome(action)
+        error_part = outcome[len("failed: "):]
+        assert error_part == "F" * 200
+        assert "..." not in error_part
+
+    def test_error_at_201_chars_is_truncated(self):
+        """A 201-char error message should be truncated to 197 + '...' = 200."""
+        error = "G" * 201
+        action = {"actionState": "failed", "output": {"error": error}}
+        outcome = _extract_outcome(action)
+        error_part = outcome[len("failed: "):]
+        assert len(error_part) == 200
+        assert error_part == "G" * 197 + "..."
+
+    def test_error_state_also_truncates_at_200(self):
+        """The 'error' state applies the same 200-char truncation."""
+        long_error = "H" * 300
+        action = {"actionState": "error", "output": {"error": long_error}}
+        outcome = _extract_outcome(action)
+        error_part = outcome[len("error: "):]
+        assert len(error_part) == 200
+        assert error_part == "H" * 197 + "..."
+
+    def test_newline_in_error_normalized_to_space(self):
+        """Newlines in error messages are replaced with spaces."""
+        action = {"actionState": "failed", "output": {"error": "line1\nline2\nline3"}}
+        outcome = _extract_outcome(action)
+        assert "\n" not in outcome
+        assert "line1 line2 line3" in outcome
+
+    def test_carriage_return_in_error_normalized(self):
+        """Carriage returns in error messages are replaced with spaces."""
+        action = {"actionState": "failed", "output": {"error": "foo\rbar"}}
+        outcome = _extract_outcome(action)
+        assert "\r" not in outcome
+        assert "foo bar" in outcome
+
+    def test_whitespace_only_error_treated_as_no_error(self):
+        """Error message that's only whitespace should be treated as absent."""
+        action = {"actionState": "failed", "output": {"error": "  \n\r  "}}
+        outcome = _extract_outcome(action)
+        assert outcome == "failed"
+
+
+class TestCountSearchResults:
+    """Tests for _count_search_results."""
+
+    def test_count_from_explicit_count_field(self):
+        assert _count_search_results({"count": 42}) == 42
+
+    def test_count_from_results_array_length(self):
+        assert _count_search_results({"results": [1, 2, 3, 4, 5]}) == 5
+
+    def test_count_from_matches_array_length(self):
+        assert _count_search_results({"matches": ["a", "b"]}) == 2
+
+    def test_count_prefers_count_over_results_array(self):
+        assert _count_search_results({"count": 10, "results": [1, 2, 3]}) == 10
+
+    def test_count_returns_none_when_no_fields(self):
+        assert _count_search_results({"foo": "bar"}) is None
+
+    def test_count_returns_none_for_none_input(self):
+        assert _count_search_results(None) is None
+
+    def test_count_returns_none_for_empty_dict(self):
+        assert _count_search_results({}) is None
+
+
+class TestGetErrorMessageFieldPriority:
+    """Tests for _get_error_message field priority: error > message > stderr."""
+
+    def test_error_field_preferred_over_message(self):
+        action = {"output": {"error": "permission denied", "message": "file access error"}}
+        assert _get_error_message(action) == "permission denied"
+
+    def test_message_field_used_when_no_error(self):
+        action = {"output": {"message": "file not found"}}
+        assert _get_error_message(action) == "file not found"
+
+    def test_stderr_used_when_no_error_or_message(self):
+        action = {"output": {"stderr": "command not found: foo"}}
+        assert _get_error_message(action) == "command not found: foo"
+
+    def test_empty_string_when_no_fields(self):
+        action = {"output": {"exitCode": 1}}
+        assert _get_error_message(action) == ""
+
+    def test_missing_output_key_returns_empty(self):
+        action = {"actionState": "failed", "input": {}}
+        assert _get_error_message(action) == ""
+
+    def test_none_output_returns_empty(self):
+        action = {"output": None}
+        assert _get_error_message(action) == ""
+
+
+class TestLooksMeaningful:
+    """Tests for _looks_meaningful keyword detection."""
+
+    def test_lowercase_error(self):
+        assert _looks_meaningful("there was an error in the build") is True
+
+    def test_capitalized_error(self):
+        assert _looks_meaningful("Error: file not found") is True
+
+    def test_uppercase_error(self):
+        assert _looks_meaningful("ERROR: connection refused") is True
+
+    def test_lowercase_fail(self):
+        assert _looks_meaningful("some tests fail here") is True
+
+    def test_uppercase_fail(self):
+        assert _looks_meaningful("FAIL tests/test_foo.py") is True
+
+    def test_warning(self):
+        assert _looks_meaningful("warning: unused variable") is True
+
+    def test_capitalized_warning(self):
+        assert _looks_meaningful("Warning: deprecated API") is True
+
+    def test_uppercase_warn(self):
+        assert _looks_meaningful("WARN: disk space low") is True
+
+    def test_test_keyword(self):
+        assert _looks_meaningful("running test suite now") is True
+
+    def test_assert_keyword(self):
+        assert _looks_meaningful("assert x == 5 failed") is True
+
+    def test_exception_lowercase(self):
+        assert _looks_meaningful("caught an exception here") is True
+
+    def test_exception_capitalized(self):
+        assert _looks_meaningful("Exception in thread main") is True
+
+    def test_traceback_lowercase(self):
+        assert _looks_meaningful("full traceback follows:") is True
+
+    def test_traceback_capitalized(self):
+        assert _looks_meaningful("Traceback (most recent call last):") is True
+
+    def test_npm_err(self):
+        assert _looks_meaningful("npm ERR! missing script") is True
+
+    def test_passed_uppercase(self):
+        assert _looks_meaningful("PASSED all integration tests") is True
+
+    def test_failed_uppercase(self):
+        assert _looks_meaningful("FAILED test_something.py") is True
+
+    def test_passed_lowercase(self):
+        assert _looks_meaningful("12 tests passed in 3s") is True
+
+    def test_failed_lowercase(self):
+        assert _looks_meaningful("3 tests failed out of 10") is True
+
+    def test_short_text_rejected(self):
+        """Text under 10 chars is not meaningful even with keywords."""
+        assert _looks_meaningful("error") is False
+        assert _looks_meaningful("fail") is False
+        assert _looks_meaningful("123456789") is False
+
+    def test_10_char_text_with_keyword_accepted(self):
+        """Text at exactly 10 chars with a keyword passes."""
+        assert _looks_meaningful("error text") is True
+
+    def test_no_keywords_rejected(self):
+        """Long text without any keywords is not meaningful."""
+        assert _looks_meaningful("this is a normal file content with nothing special") is False
+
+
+class TestExtractMeaningfulOutputBoundaries:
+    """Boundary and priority tests for _extract_meaningful_output."""
+
+    def test_error_field_takes_priority_over_stderr(self):
+        action = {"output": {"error": "primary error with traceback", "stderr": "secondary stderr"}}
+        result = _extract_meaningful_output(action)
+        assert "primary error" in result
+        assert "secondary" not in result
+
+    def test_stderr_used_when_no_error_field(self):
+        action = {"output": {"stderr": "compilation error on line 42"}}
+        result = _extract_meaningful_output(action)
+        assert "compilation error" in result
+
+    def test_stdout_used_when_no_error_or_stderr(self):
+        action = {"output": {"stdout": "FAILED test_something.py::test_case - AssertionError"}}
+        result = _extract_meaningful_output(action)
+        assert "FAILED test_something" in result
+
+    def test_result_field_used_as_last_resort(self):
+        action = {"output": {"result": "Error: validation failed for schema"}}
+        result = _extract_meaningful_output(action)
+        assert "validation failed" in result
+
+    def test_empty_error_field_falls_through_to_stderr(self):
+        action = {"output": {"error": "", "stderr": "real error with traceback"}}
+        result = _extract_meaningful_output(action)
+        assert "real error" in result
+
+    def test_none_output_returns_empty(self):
+        action = {"output": None}
+        assert _extract_meaningful_output(action) == ""
+
+    def test_meaningful_output_at_500_not_truncated(self):
+        """Meaningful output at exactly 500 chars should NOT be truncated."""
+        output = "error " + "y" * 494  # 500 chars total
+        action = {"output": {"stderr": output}}
+        result = _extract_meaningful_output(action)
+        assert result == output
+        assert not result.endswith("...")
+
+    def test_meaningful_output_at_501_is_truncated(self):
+        """Meaningful output at 501 chars should be truncated to 497 + '...' = 500."""
+        output = "error " + "z" * 495  # 501 chars total
+        action = {"output": {"stderr": output}}
+        result = _extract_meaningful_output(action)
+        assert len(result) == 500
+        assert result.endswith("...")
+        assert result == output[:497] + "..."

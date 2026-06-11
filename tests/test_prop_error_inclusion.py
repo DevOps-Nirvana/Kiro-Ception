@@ -92,13 +92,29 @@ class TestErrorInclusionProperty:
         self, action_state: str, error_msg: str, error_field: str
     ):
         """For any failed/error action with an error message, _extract_outcome
-        SHALL include the error message (potentially truncated) in the outcome."""
+        SHALL include the error message (potentially truncated) in the outcome.
+        Whitespace-only and newline-only messages are normalized away."""
         action = {
             "actionState": action_state,
             "output": {error_field: error_msg},
         }
 
         outcome = _extract_outcome(action)
+
+        # After normalization (newline→space, strip), the error may be empty
+        normalized_error = error_msg.replace("\n", " ").replace("\r", " ").strip()
+
+        if not normalized_error:
+            # Whitespace-only error messages are treated as absent
+            if action_state == "failed":
+                assert outcome == "failed", (
+                    f"Expected plain 'failed' for whitespace-only error, got: {outcome!r}"
+                )
+            else:
+                assert outcome == "error", (
+                    f"Expected plain 'error' for whitespace-only error, got: {outcome!r}"
+                )
+            return
 
         # The outcome should start with the state prefix
         if action_state == "failed":
@@ -117,10 +133,10 @@ class TestErrorInclusionProperty:
             f"Error portion exceeds 200 chars: {len(error_portion)} chars"
         )
 
-        # The error portion should be a prefix of the error message (possibly truncated)
-        if len(error_msg) <= 200:
-            assert error_portion == error_msg, (
-                f"Expected full error message '{error_msg}' but got '{error_portion}'"
+        # The error portion should be a prefix of the normalized error (possibly truncated)
+        if len(normalized_error) <= 200:
+            assert error_portion == normalized_error, (
+                f"Expected full normalized error '{normalized_error}' but got '{error_portion}'"
             )
         else:
             # When truncated, should end with "..." and be 200 chars
@@ -130,9 +146,9 @@ class TestErrorInclusionProperty:
             assert len(error_portion) == 200, (
                 f"Expected truncated error to be exactly 200 chars, got {len(error_portion)}"
             )
-            # The leading part (before "...") should be a prefix of the original message
-            assert error_msg.startswith(error_portion[:-3]), (
-                f"Truncated error is not a prefix of original message"
+            # The leading part (before "...") should be a prefix of the normalized message
+            assert normalized_error.startswith(error_portion[:-3]), (
+                f"Truncated error is not a prefix of normalized message"
             )
 
     @given(
@@ -146,12 +162,22 @@ class TestErrorInclusionProperty:
         self, action_type: str, action_state: str, error_msg: str, error_field: str
     ):
         """For any failed/error action, generate_tool_summary SHALL produce a
-        summary whose outcome portion includes the error message (truncated to 200 chars)."""
+        summary whose outcome portion includes the error message (truncated to 200 chars).
+        Whitespace-only errors are normalized away and result in plain state."""
         action = make_failed_action(action_type, action_state, error_field, error_msg)
         config = ToolSummaryConfig(include_meaningful_output=False)
 
         summary = generate_tool_summary(action, config)
         assert summary is not None, "Summary should not be None for non-excluded, non-say action"
+
+        # After normalization, check if the error is effectively empty
+        normalized_error = error_msg.replace("\n", " ").replace("\r", " ").strip()
+
+        if not normalized_error:
+            # Whitespace-only error → outcome is just the state with no ": "
+            assert f"→ {action_state}" in summary
+            assert f"→ {action_state}: " not in summary
+            return
 
         # The summary should contain the error state prefix
         assert f"→ {action_state}: " in summary, (

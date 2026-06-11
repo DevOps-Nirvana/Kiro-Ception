@@ -402,6 +402,7 @@ class BackgroundIndexer:
                     msg.uuid, msg.session_id, msg.workspace,
                     msg.timestamp.timestamp(), msg.role, msg.searchable_text,
                     msg.message_index, msg.source.value, text_hash,
+                    msg.content_tier.value, msg.tool_name,
                 ))
                 if not self._cache.has_embedding(text_hash):
                     texts_to_embed.append(msg.searchable_text)
