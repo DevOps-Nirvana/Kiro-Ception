@@ -92,15 +92,21 @@ def _write_engine_info(port: int, pid: int, cache_dir: Path):
 
 
 class FollowerRegistry:
-    """Tracks registered follower PIDs and checks their liveness."""
+    """Tracks registered follower PIDs and checks their liveness.
+
+    Thread-safe: accessed from HTTP handler threads (register) and the main
+    loop (has_live_followers, count). All access is protected by a lock.
+    """
 
     def __init__(self):
         self._followers: dict[int, float] = {}  # pid → registration time
+        self._lock = threading.Lock()
 
     def register(self, pid: int):
         """Register or refresh a follower PID."""
-        is_new = pid not in self._followers
-        self._followers[pid] = time.time()
+        with self._lock:
+            is_new = pid not in self._followers
+            self._followers[pid] = time.time()
         if is_new:
             print(f"Follower registered: pid={pid} (total: {len(self._followers)})")
 
@@ -109,23 +115,28 @@ class FollowerRegistry:
 
         Removes dead PIDs from the registry as a side effect.
         """
-        if not self._followers:
-            return False
+        with self._lock:
+            if not self._followers:
+                return False
 
-        dead_pids = []
-        for pid in self._followers:
-            if not _is_follower_alive(pid):
-                dead_pids.append(pid)
+            dead_pids = []
+            for pid in self._followers:
+                if not _is_follower_alive(pid):
+                    dead_pids.append(pid)
 
-        for pid in dead_pids:
-            del self._followers[pid]
-            print(f"Follower deregistered (dead): pid={pid} (remaining: {len(self._followers)})")
+            for pid in dead_pids:
+                del self._followers[pid]
+                print(
+                    f"Follower deregistered (dead): pid={pid} "
+                    f"(remaining: {len(self._followers)})"
+                )
 
-        return len(self._followers) > 0
+            return len(self._followers) > 0
 
     @property
     def count(self) -> int:
-        return len(self._followers)
+        with self._lock:
+            return len(self._followers)
 
 
 def _is_follower_alive(pid: int) -> bool:
