@@ -351,6 +351,24 @@ The cache DB filename includes a hash of the backend configuration. Changing mod
 
 **Privacy:** All data is processed and stored locally on your machine. No telemetry, no external API calls, and no data leaves your device; unless you explicitly configure a third-party embedding provider (e.g., OpenAI). The default configuration uses fully local, offline embeddings.
 
+## Contributing
+
+Found a bug? Have a feature request? [Open an issue](https://github.com/DevOps-Nirvana/Kiro-Ception/issues) on GitHub.
+
+### Areas Where Help is Wanted
+
+If you're looking to contribute, here are some areas where we'd love help:
+
+- **Cross-platform testing** — The codebase targets macOS, Windows, and Linux. We develop primarily on macOS and have done targeted Windows work, but need broader real-world testing on Windows (especially around the engine subprocess lifecycle, file locking, and native DLL preloading) and Linux (various distros, ARM64).
+
+- **Integration tests / CI pipeline** — Currently all tests are unit/mock-based. We need end-to-end integration tests that spin up the actual engine process with test fixture data and exercise the full MCP proxy → HTTP → engine → SQLite → search path. This would enable a proper GitHub Actions CI matrix across OS and Python versions.
+
+- **Remove legacy workspace decode fallback** — The vector search path (`search.py`) and FTS search path (`cache.py`) include fallbacks that decode base64-encoded workspace values at query time. These handle indexes created before the `_decode_workspace_dir_name` bug was fixed. After a couple release cycles, these become dead code and can be safely removed.
+
+- **Migrate engine_main.py from print() to logging** — The engine process uses bare `print()` for all status messages. Switching entire codebase to Python's `logging` module would give levels, timestamps, and configurable filtering while still routing through the existing log file support.
+
+- **SIGTERM-based graceful shutdown on Windows** — On Unix, stale engines receive SIGTERM before SIGKILL for graceful cleanup. Windows has no SIGTERM equivalent for non-console processes, so we use `TerminateProcess` directly. A Windows-native approach (e.g., named event signaling) could enable graceful shutdown there too.
+
 ## Support
 
 Found a bug? Have a feature request? [Open an issue](https://github.com/DevOps-Nirvana/Kiro-Ception/issues) on GitHub.
