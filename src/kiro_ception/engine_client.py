@@ -248,13 +248,23 @@ def spawn_engine() -> bool:
 
 
 def _kill_stale_engine(pid: int) -> bool:
-    """Kill a stale engine process that's not responding to health checks."""
+    """Kill a stale engine process, giving it a chance to shut down gracefully.
+
+    On Unix: sends SIGTERM first (allows graceful cleanup — release lock, stop
+    indexer, remove engine.json), waits up to 3 seconds, then escalates to
+    SIGKILL if the process is still alive.
+
+    On Windows: uses TerminateProcess (there is no graceful signal equivalent;
+    Windows processes don't have SIGTERM semantics outside of console apps).
+    """
     if pid <= 0 or pid == os.getpid():
         return False
 
     logger.warning(f"Killing stale engine process (pid={pid})")
 
     if sys.platform == "win32":
+        # Windows has no SIGTERM equivalent for non-console processes.
+        # TerminateProcess is the only reliable option.
         import ctypes
         PROCESS_TERMINATE = 0x0001
         handle = ctypes.windll.kernel32.OpenProcess(PROCESS_TERMINATE, False, pid)
@@ -265,11 +275,30 @@ def _kill_stale_engine(pid: int) -> bool:
         return not _is_pid_alive(pid)
     else:
         import signal
+
+        # Try graceful shutdown first (SIGTERM)
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return True  # Already dead
+        except PermissionError:
+            return False
+
+        # Wait up to 3 seconds for graceful exit
+        deadline = time.time() + 3.0
+        while time.time() < deadline:
+            if not _is_pid_alive(pid):
+                logger.info(f"Engine (pid={pid}) exited gracefully after SIGTERM")
+                return True
+            time.sleep(0.2)
+
+        # Still alive — escalate to SIGKILL
+        logger.warning(f"Engine (pid={pid}) did not exit after SIGTERM, sending SIGKILL")
         try:
             os.kill(pid, signal.SIGKILL)
             return True
         except ProcessLookupError:
-            return True
+            return True  # Died between check and kill
         except PermissionError:
             return False
 
