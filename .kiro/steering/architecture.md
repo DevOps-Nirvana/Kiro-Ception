@@ -26,7 +26,6 @@ This is a Kiro MCP Power (kiro-ception) that provides semantic search across con
 | `search.py` | SearchIndex (in-memory numpy matrix), hybrid search, peer fan-out |
 | `search_utils.py` | Pure post-processing: deduplication, context windows, pagination, date parsing |
 | `background_indexer.py` | Background thread: discovers sessions, embeds messages, periodic rescan |
-| `coordination.py` | Legacy: file-lock utilities, helper functions (used by engine_main.py) |
 | `peers.py` | Cross-machine federation: fan-out search, result merging, Argon2id + AES-256-GCM encryption |
 | `cache.py` | SQLite cache: embeddings, message metadata, session state, execution index, FTS5 search |
 | `migrations.py` | Schema versioning and migrations (FTS5 index creation, future schema changes) |
