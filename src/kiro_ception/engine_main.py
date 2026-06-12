@@ -576,7 +576,17 @@ def main():
     except OSError:
         port += 1
         _write_engine_info(port, os.getpid(), cache_dir)
-        server = ThreadingHTTPServer(("127.0.0.1", port), RequestHandler)
+        try:
+            server = ThreadingHTTPServer(("127.0.0.1", port), RequestHandler)
+        except OSError:
+            print(
+                f"ERROR: Could not bind to port {port - 1} or {port}. "
+                f"Both are in use. Check for stale engine processes or change "
+                f"server.engine_port in your config.",
+                flush=True,
+            )
+            lock.release()
+            sys.exit(1)
 
     server.timeout = 1
 
