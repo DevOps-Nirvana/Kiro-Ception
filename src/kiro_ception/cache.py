@@ -5,6 +5,7 @@ Stores both embeddings and message metadata for fast query without
 re-reading source files.
 """
 
+import base64
 import hashlib
 import logging
 import sqlite3
@@ -299,8 +300,7 @@ class EmbeddingCache:
         if workspace:
             # Bidirectional: match sessions that are parents OR children of the query workspace
             # Also match base64-encoded legacy values
-            import base64 as _b64
-            encoded_ws = _b64.urlsafe_b64encode(workspace.encode()).decode().rstrip("=")
+            encoded_ws = base64.urlsafe_b64encode(workspace.encode()).decode().rstrip("=")
             conditions.append(
                 "(m.workspace LIKE ? || '%' OR ? LIKE m.workspace || '%' "
                 "OR m.workspace LIKE ? || '%')"
