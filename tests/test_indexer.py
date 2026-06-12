@@ -157,7 +157,7 @@ def cache(tmp_path, monkeypatch):
     """Real SQLite cache in a temp directory."""
     monkeypatch.setattr(
         "kiro_ception.cache._get_cache_db_path",
-        lambda fp: tmp_path / f"cache_{fp}.db",
+        lambda fp: tmp_path / f"cache_{hashlib.md5(fp.encode()).hexdigest()[:12]}.db",
     )
     c = EmbeddingCache("test-backend:mock:128")
     _ = c.conn

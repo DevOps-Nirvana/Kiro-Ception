@@ -1,29 +1,25 @@
 """FastMCP server for Kiro Ception — MCP tool definitions and entrypoint.
 
-Uses a leader-follower pattern: the first instance becomes the leader
-(holds embeddings in RAM, runs indexer, serves HTTP). Additional instances
-become followers that forward requests to the leader.
+This process is a thin MCP stdio proxy. It spawns and communicates with a
+separate engine process that owns the embeddings, indexer, and HTTP API.
+All tool calls forward to the engine via HTTP.
+
+Architecture:
+- This process: MCP stdio server (asyncio, no heavy deps, fast startup)
+- Engine process: HTTP server + indexer + search (separate PID, detached)
 """
 
 import os
-import platform
-import time as _time
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from .background_indexer import get_background_indexer
 from .config import get_config as _get_config
 from .config import expand_path
-from .coordination import get_instance_manager
-from .memory import get_memory_limit
+from .engine_client import ensure_engine_running, get_engine_client
 from .models import Source
-from .search import SearchIndex, get_search_index, handle_search_request, leader_search, search
 
 mcp = FastMCP("kiro-ception")
-
-# Track process start time for uptime reporting
-_process_start_time = _time.time()
 
 # --- Initialization ---
 
@@ -31,37 +27,20 @@ _initialized = False
 
 
 def _initialize():
-    """Initialize instance manager: elect leader, start indexer, load search index.
+    """Ensure the engine process is running.
 
-    By default this runs eagerly at startup (in main()). If server.deferred_init
-    is True in config, this is deferred to the first tool call instead.
+    Spawns the engine subprocess if it's not already running.
+    This is fast (<1s) if the engine is already healthy.
     """
     global _initialized
     if _initialized:
         return
     _initialized = True
-
-    manager = get_instance_manager()
-    role = manager.initialize(search_handler=handle_search_request)
-
-    if role == "leader":
-        # Start background indexer (only leader indexes)
-        indexer = get_background_indexer()
-        indexer.start()
-        # Eagerly load the search index from existing cache so the first
-        # search doesn't hit an empty matrix (if prior data exists in SQLite)
-        get_search_index()
-
-    # Start heartbeat thread (leader writes heartbeat, follower checks liveness)
-    manager.start_heartbeat()
+    ensure_engine_running()
 
 
 def _ensure_initialized():
-    """Ensure initialization has run (called at the top of each tool).
-
-    With eager init (default), this is a no-op. With deferred_init=True,
-    this triggers initialization on first tool call.
-    """
+    """Ensure initialization has run (called at the top of each tool)."""
     if not _initialized:
         _initialize()
 
@@ -119,18 +98,19 @@ def search_project_history(
         Search results with matched messages, scores, context, and pagination info
     """
     _ensure_initialized()
-    return search(
-        query=query,
-        workspace=_get_current_workspace(),
-        source=None,
-        after=after,
-        before=before,
-        context_size=context_size,
-        threshold=threshold,
-        max_results=max_results,
-        offset=offset,
-        include_tool_context=include_tool_context,
-    )
+    client = get_engine_client()
+    return client.search({
+        "query": query,
+        "workspace": _get_current_workspace(),
+        "source": None,
+        "after": after,
+        "before": before,
+        "context_size": context_size,
+        "threshold": threshold,
+        "max_results": max_results,
+        "offset": offset,
+        "include_tool_context": include_tool_context,
+    })
 
 
 @mcp.tool()
@@ -173,22 +153,23 @@ def search_global_history(
     _ensure_initialized()
     source_filter = None
     if source == "cli":
-        source_filter = Source.CLI
+        source_filter = "cli"
     elif source == "ide":
-        source_filter = Source.IDE
+        source_filter = "ide"
 
-    return search(
-        query=query,
-        workspace=None,
-        source=source_filter,
-        after=after,
-        before=before,
-        context_size=context_size,
-        threshold=threshold,
-        max_results=max_results,
-        offset=offset,
-        include_tool_context=include_tool_context,
-    )
+    client = get_engine_client()
+    return client.search({
+        "query": query,
+        "workspace": None,
+        "source": source_filter,
+        "after": after,
+        "before": before,
+        "context_size": context_size,
+        "threshold": threshold,
+        "max_results": max_results,
+        "offset": offset,
+        "include_tool_context": include_tool_context,
+    })
 
 
 @mcp.tool()
@@ -201,80 +182,11 @@ def get_indexing_status() -> dict:
     (it can be ready from a prior cache while new indexing is in progress).
     """
     _ensure_initialized()
-    manager = get_instance_manager()
-
-    if not manager.is_leader:
-        follower = manager.follower_instance
-        if follower:
-            try:
-                return follower.get_status()
-            except Exception:
-                return {"error": "Leader unavailable", "state": "unknown"}
-
-    indexer = get_background_indexer()
-    status = indexer.status.to_dict()
-
-    # Add search readiness info from the in-memory index
-    search_index = get_search_index()
-    status["search_ready"] = search_index.message_count > 0
-    status["search_message_count"] = search_index.message_count
-
-    # Add database size on disk
-    if indexer.cache:
-        try:
-            from pathlib import Path
-            db_path = Path(indexer.cache.db_path) if not isinstance(indexer.cache.db_path, Path) else indexer.cache.db_path
-            db_size = db_path.stat().st_size if db_path.exists() else 0
-            status["db_size_mb"] = round(db_size / (1024 * 1024), 2)
-        except (OSError, TypeError):
-            status["db_size_mb"] = None
-    else:
-        status["db_size_mb"] = None
-
-    # Schema and FTS status
-    if indexer.cache:
-        from .migrations import get_schema_version
-        status["schema_version"] = get_schema_version(indexer.cache.conn)
-        try:
-            indexer.cache.conn.execute("SELECT 1 FROM messages_fts LIMIT 0")
-            status["fts_enabled"] = True
-        except Exception:
-            status["fts_enabled"] = False
-    else:
-        status["schema_version"] = None
-        status["fts_enabled"] = False
-
-    # Process uptime
-    status["uptime_seconds"] = round(_time.time() - _process_start_time, 1)
-
-    # Process memory usage
+    client = get_engine_client()
     try:
-        import resource
-        mem_bytes = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        # macOS reports in bytes, Linux in kilobytes
-        if platform.system() == "Darwin":
-            mem_mb = mem_bytes / (1024 * 1024)
-        else:
-            mem_mb = mem_bytes / 1024
-    except ImportError:
-        # Windows: use psutil or fallback
-        import os
-        try:
-            import psutil
-            mem_mb = psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
-        except ImportError:
-            # Fallback: rough estimate via os on Windows
-            mem_mb = 0.0
-    status["memory_used_mb"] = round(mem_mb, 1)
-    memory_limit = get_memory_limit()
-    if memory_limit > 0:
-        status["memory_limit_mb"] = round(memory_limit / (1024 * 1024))
-        status["memory_used_percent"] = round(mem_mb / (memory_limit / (1024 * 1024)) * 100, 1)
-    else:
-        status["memory_limit_mb"] = None
-        status["memory_used_percent"] = None
-
-    return status
+        return client.get_status()
+    except Exception:
+        return {"error": "Engine unavailable", "state": "unknown"}
 
 
 @mcp.tool()
@@ -298,31 +210,13 @@ def rescan(full: bool = False) -> dict:
         Confirmation that rescan was triggered
     """
     _ensure_initialized()
-    manager = get_instance_manager()
-
-    if not manager.is_leader:
-        follower = manager.follower_instance
-        if follower:
-            try:
-                if full:
-                    return follower.trigger_reindex()
-                return follower.trigger_rescan()
-            except Exception:
-                return {"error": "Leader unavailable"}
-
-    indexer = get_background_indexer()
-    if full:
-        indexer.trigger_reindex()
-        return {
-            "status": "full_rescan_triggered",
-            "message": "Full rescan started — all sessions will be re-read (mtime cache cleared). Existing embeddings preserved. Use get_indexing_status to monitor.",
-        }
-    else:
-        indexer.trigger_rescan()
-        return {
-            "status": "rescan_triggered",
-            "message": "Rescan started — checking for new/changed sessions. Use get_indexing_status to monitor.",
-        }
+    client = get_engine_client()
+    try:
+        if full:
+            return client.trigger_reindex()
+        return client.trigger_rescan()
+    except Exception:
+        return {"error": "Engine unavailable"}
 
 
 @mcp.tool()
@@ -337,88 +231,17 @@ def get_config() -> dict:
         Full configuration details
     """
     _ensure_initialized()
-    manager = get_instance_manager()
-
-    if not manager.is_leader:
-        follower = manager.follower_instance
-        if follower:
-            try:
-                return follower.get_config()
-            except Exception:
-                pass  # Fall through to local config
-
-    config = _get_config()
-    indexer = get_background_indexer()
-
-    from .config import CONFIG_FILE
-
-    return {
-        "instance": manager.get_role_info(),
-        "version": {
-            "kiro_ception": __import__("kiro_ception").__version__,
-            "python": platform.python_version(),
-            "platform": f"{platform.system()} {platform.machine()}",
-        },
-        "paths": {
-            "config_file": str(CONFIG_FILE),
-            "config_exists": CONFIG_FILE.exists(),
-            "cache_dir": str(config.embedding.cache_path),
-            "cache_database": str(indexer.cache.db_path) if indexer.cache else "not initialized",
-            "leader_lock": str(config.embedding.cache_path / "leader.lock"),
-            "leader_info": str(config.embedding.cache_path / "leader.json"),
-        },
-        "sources": {
-            "cli": {
-                "enabled": config.cli.enabled,
-                "database_path": str(config.cli.database_path) if config.cli.database_path else None,
-            },
-            "ide": {
-                "enabled": config.ide.enabled,
-                "patterns": config.ide.patterns,
-            },
-        },
-        "embedding": {
-            "backend": config.embedding.backend,
-            "model": config.embedding.model,
-            "api_base": config.embedding.api_base or None,
-            "dimensions": config.embedding.dimensions,
-            "batch_size": config.embedding.batch_size,
-            "fingerprint": indexer.backend.fingerprint() if indexer.backend else "not initialized",
-        },
-        "search": {
-            "default_threshold": config.search.default_threshold,
-            "default_max_results": config.search.default_max_results,
-            "default_context_window": config.search.default_context_window,
-        },
-        "memory": {
-            "fraction": config.memory.fraction,
-            "limit_mb": config.memory.limit_mb,
-            "effective_limit_mb": round(get_memory_limit() / 1024 / 1024) if get_memory_limit() > 0 else "unlimited",
-        },
-        "indexing": {
-            "throttle_ms": config.indexing.throttle_ms,
-            "rescan_interval_minutes": config.indexing.rescan_interval_minutes,
-        },
-        "server": {
-            "leader_port": config.server.leader_port,
-            "listen_address": f"127.0.0.1:{manager.leader_instance.port}"
-            if manager.is_leader and manager.leader_instance
-            else f"127.0.0.1:{manager.follower_instance.leader_port}"
-            if not manager.is_leader and manager.follower_instance and manager.follower_instance.leader_port
-            else None,
-        },
-        "peers": {
-            "enabled": config.peers.enabled,
-            "nodes": config.peers.nodes,
-            "secret_configured": bool(config.peers.secret),
-            "timeout_seconds": config.peers.timeout_seconds,
-        },
-        "cache": {
-            "embedding_count": indexer.cache.embedding_count if indexer.cache else 0,
-            "message_count": indexer.cache.message_count if indexer.cache else 0,
-            "indexed_sessions": indexer.cache.indexed_session_count if indexer.cache else 0,
-        },
-    }
+    client = get_engine_client()
+    try:
+        return client.get_config()
+    except Exception:
+        # Fallback: return local config info
+        config = _get_config()
+        return {
+            "error": "Engine unavailable — showing local config only",
+            "embedding": {"backend": config.embedding.backend, "model": config.embedding.model},
+            "server": {"engine_port": config.server.engine_port},
+        }
 
 
 @mcp.tool()
@@ -435,55 +258,11 @@ def reload_config() -> dict:
         List of changes detected, what was applied, and any warnings
     """
     _ensure_initialized()
-    manager = get_instance_manager()
-
-    if not manager.is_leader:
-        follower = manager.follower_instance
-        if follower:
-            try:
-                return follower.reload_config()
-            except Exception:
-                return {"error": "Leader unavailable"}
-
-    from .config import reload_config as _reload, diff_configs
-
-    old_config, new_config = _reload()
-    changes = diff_configs(old_config, new_config)
-
-    if not changes:
-        return {
-            "status": "no_changes",
-            "message": "Configuration file has not changed.",
-        }
-
-    # Categorize changes
-    safe_changes = [c for c in changes if c["impact"] == "safe"]
-    breaking_changes = [c for c in changes if c["impact"] == "requires_reindex"]
-
-    applied = []
-    deferred = []
-    warnings = []
-
-    # Apply safe changes to the background indexer
-    if safe_changes:
-        applied = [c["key"] for c in safe_changes]
-
-    # Flag breaking changes
-    if breaking_changes:
-        for c in breaking_changes:
-            deferred.append(f"{c['key']} — requires rescan(full=True) to take effect")
-            warnings.append(
-                f"{c['key']} changed: {c['old']} → {c['new']}. "
-                f"This requires a full rescan. Run rescan(full=True) to rebuild with the new settings."
-            )
-
-    return {
-        "status": "config_reloaded",
-        "changes": changes,
-        "applied": applied,
-        "deferred": deferred,
-        "warnings": warnings,
-    }
+    client = get_engine_client()
+    try:
+        return client.reload_config()
+    except Exception:
+        return {"error": "Engine unavailable"}
 
 
 # --- Conditional tools (registered at import time based on config) ---

@@ -1,7 +1,7 @@
 """Search engine: in-memory numpy matrix and search routing.
 
 Contains the SearchIndex class (vectorized cosine similarity search),
-leader search logic, and peer federation integration.
+engine search logic, and peer federation integration.
 """
 
 import math
@@ -11,8 +11,8 @@ import numpy as np
 
 from .background_indexer import get_background_indexer
 from .config import get_config
-from .coordination import get_instance_manager
 from .embeddings import get_embedding_backend
+from .ide_loader import _decode_workspace_dir_name
 from .models import Source
 from .peers import fan_out_search, merge_peer_results
 from .search_utils import (
@@ -21,7 +21,7 @@ from .search_utils import (
     parse_date,
 )
 
-# --- In-Memory Search Index (leader only) ---
+# --- In-Memory Search Index (engine only) ---
 
 _MIN_REFRESH_INTERVAL = 60  # seconds
 
@@ -347,9 +347,17 @@ class SearchIndex:
                 if not mask[i]:
                     continue
                 meta = self._metadata[i]
-                if workspace and not meta["workspace"].startswith(workspace):
-                    mask[i] = False
-                elif source and meta["source"] != source:
+                if workspace:
+                    stored_ws = meta["workspace"]
+                    # Bidirectional prefix match: session workspace may be a parent
+                    # of the query workspace (multi-root workspace) or vice versa
+                    if not (stored_ws.startswith(workspace) or workspace.startswith(stored_ws)):
+                        # Try decoding in case stored value is base64 (legacy index)
+                        decoded_ws = _decode_workspace_dir_name(stored_ws)
+                        if not (decoded_ws.startswith(workspace) or workspace.startswith(decoded_ws)):
+                            mask[i] = False
+                            continue
+                if source and meta["source"] != source:
                     mask[i] = False
                 elif after_ts and meta["timestamp"] < after_ts:
                     mask[i] = False
@@ -374,7 +382,7 @@ class SearchIndex:
         return results
 
 
-# Global search index singleton (leader only)
+# Global search index singleton (engine only)
 _search_index: SearchIndex | None = None
 
 
@@ -406,7 +414,7 @@ def invalidate_search_index():
 
 
 def handle_search_request(request: dict) -> dict:
-    """Handle a search request (used by both leader directly and HTTP API)."""
+    """Handle a search request (used by both engine directly and HTTP API)."""
     return search(
         query=request.get("query", ""),
         workspace=request.get("workspace"),
@@ -433,48 +441,13 @@ def search(
     offset: int,
     include_tool_context: bool = False,
 ) -> dict:
-    """Search implementation with leader/follower routing.
+    """Search implementation — always runs as the engine.
 
-    Leader: searches directly against SQLite cache.
-    Follower: forwards to leader via HTTP. On failure, attempts promotion.
+    Searches directly against the in-memory index and SQLite cache,
+    then fans out to peers if configured.
     """
-    manager = get_instance_manager()
-
-    if not manager.is_leader:
-        # Follower: forward to leader
-        follower = manager.follower_instance
-        if follower:
-            try:
-                return follower.search({
-                    "query": query,
-                    "workspace": workspace,
-                    "source": source.value if source else None,
-                    "after": after,
-                    "before": before,
-                    "context_size": context_size,
-                    "threshold": threshold,
-                    "max_results": max_results,
-                    "offset": offset,
-                    "include_tool_context": include_tool_context,
-                })
-            except Exception:
-                # Leader unreachable — attempt promotion
-                if manager.promote_to_leader(handle_search_request):
-                    # We're now leader, start indexer
-                    indexer = get_background_indexer()
-                    indexer.start()
-                    # Fall through to leader search below
-                else:
-                    return {
-                        "results": [],
-                        "query": query,
-                        "total_matches": 0,
-                        "error": "Leader unavailable and could not promote",
-                        "hint": "Try again in a moment.",
-                    }
-
-    # Leader path: search directly
-    local_response = leader_search(query, workspace, source, after, before,
+    # Engine path: search directly
+    local_response = engine_search(query, workspace, source, after, before,
                                    context_size, threshold, max_results, offset,
                                    include_tool_context)
 
@@ -485,7 +458,7 @@ def search(
     )
 
 
-def leader_search(
+def engine_search(
     query: str,
     workspace: str | None,
     source: Source | None,
@@ -497,7 +470,7 @@ def leader_search(
     offset: int,
     include_tool_context: bool = False,
 ) -> dict:
-    """Direct search using in-memory numpy matrix (leader only)."""
+    """Direct search using in-memory numpy matrix (engine only)."""
     indexer = get_background_indexer()
     backend = indexer.backend
 

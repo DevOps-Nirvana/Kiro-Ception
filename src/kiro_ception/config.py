@@ -150,9 +150,10 @@ class IndexingConfig:
 class ServerConfig:
     """Server/inter-process communication configuration."""
 
-    leader_port: int = 19742  # Localhost-only HTTP port for leader
-    deferred_init: bool = False  # If True, delay leader election until first tool call
-    heartbeat_interval_seconds: int = 30  # How often to check leader liveness
+    engine_port: int = 19742  # Localhost-only HTTP port for engine
+    deferred_init: bool = False  # If True, delay engine election until first tool call
+    heartbeat_interval_seconds: int = 30  # How often to check engine liveness
+    engine_log_file: str = ""  # Path to engine log file (empty = no file logging)
 
 
 @dataclass
@@ -274,7 +275,7 @@ def diff_configs(old: Config, new: Config) -> list[dict]:
         ("search.workspace_dir", old.search.workspace_dir, new.search.workspace_dir),
         ("memory.fraction", old.memory.fraction, new.memory.fraction),
         ("memory.limit_mb", old.memory.limit_mb, new.memory.limit_mb),
-        ("server.leader_port", old.server.leader_port, new.server.leader_port),
+        ("server.engine_port", old.server.engine_port, new.server.engine_port),
         ("sources.cli.enabled", old.cli.enabled, new.cli.enabled),
         ("sources.ide.enabled", old.ide.enabled, new.ide.enabled),
         ("peers.enabled", old.peers.enabled, new.peers.enabled),

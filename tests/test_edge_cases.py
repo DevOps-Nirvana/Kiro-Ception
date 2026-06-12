@@ -20,7 +20,7 @@ import pytest
 from kiro_ception.background_indexer import BackgroundIndexer, IndexerState, IndexingStatus
 from kiro_ception.cache import EmbeddingCache
 from kiro_ception.config import Config, EmbeddingConfig, IndexingConfig, MemoryConfig
-from kiro_ception.coordination import FollowerInstance, InstanceManager, LeaderInstance
+from kiro_ception.engine_client import EngineClient
 from kiro_ception.models import IndexedMessage, SessionInfo, Source
 from kiro_ception.search import SearchIndex, get_search_index, invalidate_search_index
 
@@ -82,7 +82,7 @@ class TestSearchIndexInvalidation:
 
     def test_search_index_refreshes_after_invalidation(self, tmp_path):
         """After invalidation, SearchIndex should reload from current cache on next access."""
-        with patch("kiro_ception.cache._get_cache_db_path", lambda fp: tmp_path / f"cache_{fp}.db"):
+        with patch("kiro_ception.cache._get_cache_db_path", lambda fp: tmp_path / f"cache_{hashlib.md5(fp.encode()).hexdigest()[:12]}.db"):
             cache = EmbeddingCache("test:v1:64")
             _ = cache.conn  # Initialize tables
 
@@ -116,67 +116,37 @@ class TestSearchIndexInvalidation:
             cache.close()
 
 
-# --- Critical: Follower failover edge cases ---
+# --- Critical: EngineClient port refresh edge cases ---
 
 
-class TestFollowerFailover:
-    def test_follower_refreshes_port_on_connection_failure(self, tmp_path, monkeypatch):
-        """Follower should re-read leader.json when connection fails."""
-        info_path = tmp_path / "leader.json"
-        info_path.write_text(json.dumps({"port": 11111, "pid": 99}))
-        monkeypatch.setattr("kiro_ception.coordination._get_leader_info_path", lambda: info_path)
+class TestEngineClientPortRefresh:
+    def test_client_refreshes_port_on_connection_failure(self, tmp_path, monkeypatch):
+        """EngineClient should re-read engine.json when connection fails."""
+        monkeypatch.setattr("kiro_ception.engine_client._get_cache_dir", lambda: tmp_path)
+        (tmp_path / "engine.json").write_text(json.dumps({"port": 11111, "pid": 99}))
 
-        follower = FollowerInstance()
-        assert follower.leader_port == 11111
+        client = EngineClient()
+        client._port = 11111
 
-        # Leader restarts on new port
-        info_path.write_text(json.dumps({"port": 22222, "pid": 100}))
+        # Engine restarts on new port
+        (tmp_path / "engine.json").write_text(json.dumps({"port": 22222, "pid": 100}))
 
         # Refresh should pick up new port
-        follower._refresh_leader_port()
-        assert follower.leader_port == 22222
+        client._refresh_port()
+        assert client._port == 22222
 
-    def test_follower_leader_port_none_after_info_deleted(self, tmp_path, monkeypatch):
-        """If leader.json is deleted, follower reports None."""
-        info_path = tmp_path / "leader.json"
-        info_path.write_text(json.dumps({"port": 11111, "pid": 99}))
-        monkeypatch.setattr("kiro_ception.coordination._get_leader_info_path", lambda: info_path)
+    def test_client_port_none_after_info_deleted(self, tmp_path, monkeypatch):
+        """If engine.json is deleted, client reports None port."""
+        monkeypatch.setattr("kiro_ception.engine_client._get_cache_dir", lambda: tmp_path)
+        (tmp_path / "engine.json").write_text(json.dumps({"port": 11111, "pid": 99}))
 
-        follower = FollowerInstance()
-        assert follower.leader_port == 11111
+        client = EngineClient()
+        client._port = 11111
 
         # Delete the info file
-        info_path.unlink()
-        follower._refresh_leader_port()
-        assert follower.leader_port is None
-
-    def test_promotion_failure_returns_false(self, tmp_path, monkeypatch):
-        """If promotion fails (lock held), promote_to_leader returns False."""
-        lock_path = tmp_path / "leader.lock"
-        info_path = tmp_path / "leader.json"
-        monkeypatch.setattr("kiro_ception.coordination._get_lock_path", lambda: lock_path)
-        monkeypatch.setattr("kiro_ception.coordination._get_leader_info_path", lambda: info_path)
-
-        # First instance holds the lock
-        leader = LeaderInstance()
-        leader.try_acquire_leadership()
-
-        # Second instance tries to promote — should fail
-        manager = InstanceManager()
-        manager._role = "follower"
-        manager._follower = FollowerInstance()
-
-        # Don't unlink the lock (simulate another process holding it)
-        with patch("kiro_ception.coordination._get_lock_path", return_value=lock_path):
-            # The promote_to_leader tries to unlink then acquire — but lock is held
-            result = manager.promote_to_leader(search_handler=MagicMock())
-
-        # Clean up
-        leader.release_leadership()
-
-        # Result depends on whether lock was released by unlink
-        # (In practice, filelock on the same process can re-acquire)
-        assert isinstance(result, bool)
+        (tmp_path / "engine.json").unlink()
+        client._refresh_port()
+        assert client._port is None
 
 
 # --- High: Cache corruption recovery ---
@@ -212,7 +182,7 @@ class TestCacheCorruption:
         """Embeddings with wrong blob size should be skipped, not crash SearchIndex."""
         monkeypatch.setattr(
             "kiro_ception.cache._get_cache_db_path",
-            lambda fp: tmp_path / f"cache_{fp}.db",
+            lambda fp: tmp_path / f"cache_{hashlib.md5(fp.encode()).hexdigest()[:12]}.db",
         )
 
         cache = EmbeddingCache("test:dims:64")
@@ -267,7 +237,7 @@ class TestMixedDimensions:
         """Embeddings with different dimensions should be filtered out."""
         monkeypatch.setattr(
             "kiro_ception.cache._get_cache_db_path",
-            lambda fp: tmp_path / f"cache_{fp}.db",
+            lambda fp: tmp_path / f"cache_{hashlib.md5(fp.encode()).hexdigest()[:12]}.db",
         )
 
         cache = EmbeddingCache("test:mixed:64")
@@ -311,7 +281,7 @@ class TestPartialSessionRecovery:
         """If indexer crashes mid-session, the session is re-processed on restart."""
         monkeypatch.setattr(
             "kiro_ception.cache._get_cache_db_path",
-            lambda fp: tmp_path / f"cache_{fp}.db",
+            lambda fp: tmp_path / f"cache_{hashlib.md5(fp.encode()).hexdigest()[:12]}.db",
         )
 
         cache = EmbeddingCache("test:recovery:64")
@@ -349,7 +319,7 @@ class TestConcurrentAccess:
         """If messages are deleted mid-refresh, SearchIndex should handle gracefully."""
         monkeypatch.setattr(
             "kiro_ception.cache._get_cache_db_path",
-            lambda fp: tmp_path / f"cache_{fp}.db",
+            lambda fp: tmp_path / f"cache_{hashlib.md5(fp.encode()).hexdigest()[:12]}.db",
         )
 
         cache = EmbeddingCache("test:concurrent:64")

@@ -6,22 +6,26 @@ This is a Kiro MCP Power (kiro-ception) that provides semantic search across con
 
 ### Core Principles
 
-- **Non-blocking**: The MCP server responds immediately. All heavy work (indexing, embedding) happens in background threads.
-- **Leader-follower**: Only one process holds the search index in RAM. Additional processes proxy to it via localhost HTTP (port 19742 by default).
+- **Non-blocking**: The MCP server responds immediately. All heavy work (indexing, embedding) happens in a separate engine process.
+- **Process separation**: The MCP process is a thin stdio proxy with no heavy dependencies. A separate engine process owns the search index, embeddings, and indexer. The MCP process spawns the engine on demand and communicates via localhost HTTP.
+- **Code fingerprinting**: On reconnect, the MCP client checks if the engine's code matches the current source files. Mismatch triggers automatic engine restart — ensures code changes take effect immediately.
+- **PID registry**: The engine tracks which MCP client processes are alive. When all clients die, the engine shuts itself down gracefully.
 - **Streaming**: Never load all conversations into memory at once. Process one session at a time, discard text after embedding.
 - **Crash-safe**: SQLite with WAL mode. Every embedding and session state update is committed atomically. Ctrl+C loses at most one in-flight message.
 - **Incremental**: File mtime tracking skips unchanged sessions. Text hash deduplication avoids re-embedding identical content.
-- **Eager cold-start**: Leader loads the SearchIndex from existing SQLite cache immediately on init, before the first search arrives.
+- **Eager cold-start**: Engine loads the SearchIndex from existing SQLite cache immediately on init, before the first search arrives.
 
 ### Module Responsibilities
 
 | Module | Purpose |
 |--------|---------|
-| `server.py` | MCP tool definitions, initialization, workspace detection |
-| `search.py` | SearchIndex (in-memory numpy matrix), hybrid search routing (leader/follower), peer fan-out |
+| `server.py` | MCP tool definitions, initialization (spawns engine), workspace detection |
+| `engine_main.py` | Standalone engine process: HTTP server, indexer lifecycle, DLL preload |
+| `engine_client.py` | Client library: spawn/discover/health-check/fingerprint engine, auto-respawn |
+| `dashboard.py` | HTML dashboard served by the engine at GET / |
+| `search.py` | SearchIndex (in-memory numpy matrix), hybrid search, peer fan-out |
 | `search_utils.py` | Pure post-processing: deduplication, context windows, pagination, date parsing |
 | `background_indexer.py` | Background thread: discovers sessions, embeds messages, periodic rescan |
-| `coordination.py` | File-lock based leader election, HTTP server for followers, failover |
 | `peers.py` | Cross-machine federation: fan-out search, result merging, Argon2id + AES-256-GCM encryption |
 | `cache.py` | SQLite cache: embeddings, message metadata, session state, execution index, FTS5 search |
 | `migrations.py` | Schema versioning and migrations (FTS5 index creation, future schema changes) |
@@ -43,7 +47,7 @@ This is a Kiro MCP Power (kiro-ception) that provides semantic search across con
 ### Search Path (Read)
 
 ```
-MCP tool call (server.py) → search() (search.py) → leader_search()
+MCP tool call (server.py) → search() (search.py) → engine_search()
   → SearchIndex.search() (numpy cosine similarity — 70% weight)
   → cache.fts_search() (FTS5 BM25 keyword match — 30% weight)
   → _merge_hybrid_results() (combine vector + FTS scores)
@@ -69,7 +73,7 @@ BackgroundIndexer._run() → _index_pass()
 
 ### Cold-Start Behavior
 
-On leader initialization:
+On engine initialization:
 1. BackgroundIndexer starts in background thread
 2. SearchIndex._refresh() is called eagerly from _ensure_initialized()
 3. If SQLite has data from prior run: matrix loads in <1s, first search works immediately
@@ -89,6 +93,6 @@ On leader initialization:
 - **10-minute rescan interval**: Picks up new conversations without hammering the filesystem
 - **No separate CLI indexer**: Background indexing in the MCP server handles everything; `rescan(full=True)` tool covers manual rebuilds
 - **search_utils.py extraction**: Pure functions for post-processing (dedup, pagination, context) are separated from server.py for independent unit testing
-- **search.py extraction**: SearchIndex and all search routing logic (leader/follower/peer fan-out) live in `search.py`, keeping `server.py` focused solely on MCP tool definitions and initialization
+- **search.py extraction**: SearchIndex and all search logic live in `search.py`, keeping `server.py` focused solely on MCP tool proxy definitions
 - **Peer federation via HTTP fan-out**: Each machine maintains its own index. Peers are queried in parallel and results are merged by score. No shared state, no sync conflicts.
 - **Optional AES-256-GCM encryption for peers**: Key derived via Argon2id (memory-hard KDF). Both peers derive the same key from the same passphrase independently — no key exchange protocol needed. Crypto functions live directly in `peers.py` (no separate module).

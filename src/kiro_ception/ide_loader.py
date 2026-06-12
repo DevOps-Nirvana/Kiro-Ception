@@ -5,6 +5,7 @@ Supports two formats:
 - Current: workspace-sessions/<base64_workspace>/<uuid>.json
 """
 
+import base64
 import json
 import logging
 import re
@@ -16,6 +17,31 @@ from .models import ContentTier, IndexedMessage, SessionInfo, Source
 from .tool_summaries import ToolSummaryConfig, generate_tool_summary
 
 logger = logging.getLogger(__name__)
+
+
+def _decode_workspace_dir_name(dirname: str) -> str:
+    """Decode a base64-encoded workspace directory name to a filesystem path.
+
+    Kiro IDE encodes workspace paths as URL-safe base64 for use as directory names.
+    The encoding uses '_' as both the URL-safe substitute for '/' AND as padding
+    (replacing the standard '=' padding character). We strip trailing '_' before
+    adding proper '=' padding to decode correctly.
+
+    Falls back to the raw directory name if decoding fails entirely.
+    """
+    try:
+        # Strip trailing '_' which Kiro uses as padding (replacing '=')
+        stripped = dirname.rstrip('_')
+        # URL-safe base64: - means +, _ means / (but we already stripped trailing _)
+        fixed = stripped.replace('-', '+').replace('_', '/')
+        # Add proper padding
+        padding = 4 - len(fixed) % 4
+        if padding != 4:
+            fixed += "=" * padding
+        return base64.b64decode(fixed).decode("utf-8")
+    except Exception:
+        return dirname
+
 
 # Prefixes for messages that are system/boilerplate content (no search value)
 _SKIP_PREFIXES = (
@@ -116,7 +142,7 @@ def _list_legacy_sessions() -> list[SessionInfo]:
         try:
             stat = chat_file.stat()
             session_id = chat_file.stem
-            workspace = chat_file.parent.name
+            workspace = _decode_workspace_dir_name(chat_file.parent.name)
 
             sessions.append(
                 SessionInfo(
@@ -237,18 +263,7 @@ def _list_workspace_sessions() -> list[SessionInfo]:
                 continue
 
             # Decode workspace path from directory name
-            import base64
-            try:
-                encoded = workspace_dir.name
-                # URL-safe base64: _ -> /, - -> +, ? -> =
-                fixed = encoded.replace('-', '+').replace('_', '/').replace('?', '=')
-                # Add padding if needed
-                padding = 4 - len(fixed) % 4
-                if padding != 4:
-                    fixed += "=" * padding
-                workspace_path = base64.b64decode(fixed).decode("utf-8").rstrip("?")
-            except Exception:
-                workspace_path = workspace_dir.name
+            workspace_path = _decode_workspace_dir_name(workspace_dir.name)
 
             # Find session JSON files (UUIDs, not sessions.json)
             for session_file in workspace_dir.glob("*.json"):

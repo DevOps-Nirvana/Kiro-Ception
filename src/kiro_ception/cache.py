@@ -297,8 +297,17 @@ class EmbeddingCache:
         params: list = []
 
         if workspace:
-            conditions.append("m.workspace LIKE ? || '%'")
+            # Bidirectional: match sessions that are parents OR children of the query workspace
+            # Also match base64-encoded legacy values
+            import base64 as _b64
+            encoded_ws = _b64.urlsafe_b64encode(workspace.encode()).decode().rstrip("=")
+            conditions.append(
+                "(m.workspace LIKE ? || '%' OR ? LIKE m.workspace || '%' "
+                "OR m.workspace LIKE ? || '%')"
+            )
             params.append(workspace)
+            params.append(workspace)
+            params.append(encoded_ws)
         if source:
             conditions.append("m.source = ?")
             params.append(source)

@@ -23,15 +23,17 @@ class TestExpandPath:
     def test_tilde_expansion(self):
         result = expand_path("~/test")
         assert "~" not in str(result)
-        assert str(result).endswith("/test")
+        assert result.name == "test"
 
     def test_absolute_path_unchanged(self):
+        from pathlib import PurePosixPath, PureWindowsPath
         result = expand_path("/tmp/test")
-        assert str(result) == "/tmp/test"
+        # On Windows, Path("/tmp/test") becomes \tmp\test
+        assert result.parts[-2:] == ("tmp", "test")
 
     def test_relative_path(self):
         result = expand_path("relative/path")
-        assert str(result) == "relative/path"
+        assert result.parts[-2:] == ("relative", "path")
 
 
 # --- Config.from_dict ---
@@ -44,7 +46,7 @@ class TestConfigFromDict:
         assert config.search.default_threshold == 0.2
         assert config.search.default_max_results == 10
         assert config.indexing.throttle_ms == 0
-        assert config.server.leader_port == 19742
+        assert config.server.engine_port == 19742
 
     def test_full_config(self):
         data = {
@@ -66,7 +68,7 @@ class TestConfigFromDict:
             },
             "memory": {"fraction": 0.5, "limit_mb": 2048},
             "indexing": {"throttle_ms": 100, "rescan_interval_minutes": 5},
-            "server": {"leader_port": 9999},
+            "server": {"engine_port": 9999},
         }
         config = Config.from_dict(data)
 
@@ -85,7 +87,7 @@ class TestConfigFromDict:
         assert config.memory.limit_mb == 2048
         assert config.indexing.throttle_ms == 100
         assert config.indexing.rescan_interval_minutes == 5
-        assert config.server.leader_port == 9999
+        assert config.server.engine_port == 9999
 
     def test_partial_config_merges_with_defaults(self):
         data = {
