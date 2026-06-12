@@ -340,7 +340,7 @@ def ensure_engine_running() -> bool:
                             f"This client is stale (loaded fingerprint={my_fingerprint}). "
                             f"Reconnect the MCP server to refresh this client."
                         )
-                        return True
+                        return True  # Client is stale, but that's ok, log and keep connecting
                     else:
                         logger.info("Fingerprint MISMATCH — engine is stale, restarting")
         else:

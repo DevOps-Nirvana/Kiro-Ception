@@ -82,12 +82,14 @@ The old single-process model had several pain points:
 ## Architecture
 
 ```
-MCP Proxy (stdio)              HTTP (127.0.0.1:19742)              Engine Process
-  server.py            ---------------------------------------->     engine_main.py
-  engine_client.py     <----------------------------------------     background indexer
-  Fast startup                  JSON responses                       search index
-  No heavy imports                                                   SQLite cache
-                                                                     HTTP API + dashboard
++---------------------+                                        +----------------------+
+|  MCP Proxy (stdio)  |         HTTP (127.0.0.1:19742)         |   Engine Process     |
+|  - server.py        | -------------------------------------> |  - engine_main.py    |
+|  - engine_client.py | <------------------------------------- |  - background indexer|
+|  - Fast startup     |         JSON responses                 |  - search index      |
+|  - No heavy imports |                                        |  - SQLite cache      |
++---------------------+                                        |  - HTTP API + dash   |
+                                                               +----------------------+
 ```
 
 ### Key behaviors
