@@ -70,7 +70,12 @@ def _preload_native_extensions(backend_type: str):
 def _write_engine_info(port: int, pid: int, cache_dir: Path):
     """Write engine info atomically for followers to discover."""
     info_path = cache_dir / "engine.json"
-    info = {"port": port, "pid": pid, "started_at": time.time()}
+    info = {
+        "port": port,
+        "pid": pid,
+        "parent_pid": os.getppid(),
+        "started_at": time.time(),
+    }
     fd, tmp_path = tempfile.mkstemp(dir=str(cache_dir), suffix=".tmp")
     try:
         with os.fdopen(fd, "w") as f:

@@ -9,6 +9,7 @@ from datetime import datetime
 import pytest
 
 from kiro_ception.ide_loader import (
+    _decode_workspace_dir_name,
     _extract_text_from_content,
     _parse_timestamp,
     _replace_code_blocks,
@@ -413,3 +414,65 @@ class TestExtractUserPromptFromExecutionLog:
         assert result is not None
         from kiro_ception.models import Source
         assert result.source == Source.IDE
+
+
+# --- _decode_workspace_dir_name ---
+
+
+class TestDecodeWorkspaceDirName:
+    """Tests for base64 workspace directory name decoding."""
+
+    def test_decodes_standard_windows_path(self):
+        """Decodes a URL-safe base64 encoded Windows path correctly."""
+        # This is the real directory name from a user's system that triggered the bug
+        encoded = "YzpcVXNlcnNcdm9pZHB0clxEcm9wYm94XF9fUHJvamVjdHNca2lyby1yZWFydmlldw__"
+        result = _decode_workspace_dir_name(encoded)
+        assert result == r"c:\Users\voidptr\Dropbox\__Projects\kiro-rearview"
+
+    def test_decodes_simple_unix_path(self):
+        """Decodes a simple Unix path without trailing garbage."""
+        import base64
+        path = "/home/user/projects/myapp"
+        encoded = base64.urlsafe_b64encode(path.encode()).decode().rstrip("=")
+        result = _decode_workspace_dir_name(encoded)
+        assert result == path
+
+    def test_handles_path_with_hyphens(self):
+        """Paths containing hyphens survive the base64 round-trip."""
+        import base64
+        path = "/home/user/my-project-name"
+        encoded = base64.urlsafe_b64encode(path.encode()).decode().rstrip("=")
+        result = _decode_workspace_dir_name(encoded)
+        assert result == path
+
+    def test_strips_trailing_underscore_padding(self):
+        """Trailing '_' characters (Kiro's padding) are handled correctly."""
+        import base64
+        path = "c:\\Users\\test\\project"
+        # Kiro encodes: urlsafe_b64encode then replaces '=' padding with '_'
+        encoded = base64.urlsafe_b64encode(path.encode()).decode()
+        kiro_encoded = encoded.replace("=", "_")
+        result = _decode_workspace_dir_name(kiro_encoded)
+        assert result == path
+
+    def test_fallback_on_totally_invalid_base64(self):
+        """Returns raw dirname when base64 decode fails entirely."""
+        # Single character that can't form valid base64 (needs min 2 chars for 1 byte)
+        invalid = "X"
+        result = _decode_workspace_dir_name(invalid)
+        # With padding added it becomes "X===" which may decode to partial byte
+        # The function should handle this gracefully either way
+        assert isinstance(result, str)
+
+    def test_empty_string(self):
+        """Empty string returns empty string (base64 of empty is empty)."""
+        result = _decode_workspace_dir_name("")
+        assert result == ""
+
+    def test_preserves_spaces_in_path(self):
+        """Paths with spaces are preserved correctly."""
+        import base64
+        path = "C:\\Users\\John Doe\\My Documents\\project"
+        encoded = base64.urlsafe_b64encode(path.encode()).decode().rstrip("=")
+        result = _decode_workspace_dir_name(encoded)
+        assert result == path

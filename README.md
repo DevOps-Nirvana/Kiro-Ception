@@ -38,13 +38,15 @@ Search results include surrounding context (messages before/after each match), r
 
 ### Architecture Highlights
 
-- **Non-blocking**: Heavy work (indexing, embedding) runs in background daemon threads. The MCP server responds instantly.
+- **Two-process model**: A thin MCP proxy (stdio) spawns a separate engine subprocess that holds the index in RAM. Code changes are detected via fingerprinting — the engine auto-restarts with fresh code when you `git pull && uv sync`.
+- **Non-blocking**: Heavy work (indexing, embedding) runs in the engine's background threads. The MCP proxy responds instantly.
 - **Hybrid search**: Combines semantic vector similarity (70%) with FTS5 full-text keyword search (30%). Find things by meaning *and* exact names.
 - **Recency-aware**: Recent conversations rank higher automatically. The decay curve scales with your history depth, no manual tuning.
-- **Multi-window efficient**: Engine-follower pattern means multiple Kiro windows share one index in RAM. No duplication, no conflicts.
+- **Multi-window efficient**: All MCP proxy instances share one engine process. A PID registry tracks connected clients — the engine auto-shuts-down when all clients die.
 - **Multi-machine**: Optional peer federation searches across all your computers simultaneously with AES-256-GCM encrypted transport.
 - **Crash-safe**: SQLite with WAL mode. Lose at most one in-flight message on Ctrl+C/crash/quit.
 - **Instant cold-start**: Loads from existing cache in under 1 second. No waiting for re-indexing after restarts.
+- **No build step**: Uses editable install (`python -m kiro_ception.engine_main`). Source changes are picked up immediately — no recompile needed.
 - **Auto-migrating**: Schema upgrades run automatically on startup, updates never require deleting your cache, future-proofing this tool.
 - **Observable**: Built-in status dashboard, indexing progress monitoring, hot-reloadable config, and health diagnostics, all accessible to the agent or via browser.
 
@@ -77,7 +79,7 @@ git pull
 uv sync
 ```
 
-Kiro picks up changes on the next MCP server restart, either in the form of you restarting Kiro, or you can "disable" the MCP tool and re-enable it.
+Kiro picks up changes automatically — the MCP proxy detects source code changes via fingerprinting and restarts the engine process with the new code. No manual restart needed.
 
 ### Install as a Kiro Power from GitHub (Alternative)
 
@@ -224,7 +226,7 @@ Both search tools accept:
 | Vector Search | [numpy](https://numpy.org/) | In-memory cosine similarity via dot product |
 | Data Models | [Pydantic](https://docs.pydantic.dev/) | Typed data validation and serialization |
 | Cache | SQLite (stdlib) | Persistent embedding + metadata storage (WAL mode) |
-| Process Coordination | [filelock](https://py-filelock.readthedocs.io/) | Engine-follower election via file locks |
+| Process Coordination | [filelock](https://py-filelock.readthedocs.io/) | Engine process election via file locks |
 | Encryption | [cryptography](https://cryptography.io/) + [argon2-cffi](https://argon2-cffi.readthedocs.io/) | AES-256-GCM peer encryption with Argon2id key derivation |
 | Build | [hatchling](https://hatch.pypa.io/) | PEP 517 build backend |
 | Package Manager | [uv](https://docs.astral.sh/uv/) | Fast dependency resolution and venv management |
@@ -311,9 +313,9 @@ On first startup, the index eagerly loads from SQLite into RAM. If embeddings ex
 - Use `reload_config` tool (applies safe changes immediately)
 - Model/backend/dimensions changes require `rescan(full=True)`
 
-### Multiple windows fighting
+### Multiple windows
 
-The engine-follower pattern handles this automatically. Use `get_config` to see which process is engine. If a engine dies, the next request attempts to auto-promote a follower.
+All Kiro windows share a single engine process automatically. Each MCP proxy registers its PID with the engine. If the engine dies, the next proxy request will respawn it. Use `get_config` to see the engine PID and port. If the engine has stale code (you updated the source), it will be killed and restarted automatically via fingerprint comparison.
 
 ### Nuclear option
 
@@ -342,8 +344,8 @@ For information about where your data is being kept, call the MCP tool "get_conf
 |------|----------|
 | `~/.config/kiro-ception/config.toml` | User configuration |
 | `~/.cache/kiro-ception/cache_<hash>.db` | SQLite database (embeddings, metadata) |
-| `~/.cache/kiro-ception/engine.lock` | Engine election file lock |
-| `~/.cache/kiro-ception/engine.json` | Engine port/PID info for followers |
+| `~/.cache/kiro-ception/engine.lock` | Engine process file lock |
+| `~/.cache/kiro-ception/engine.json` | Engine port/PID info for MCP proxies |
 
 The cache DB filename includes a hash of the backend configuration. Changing model/backend/dimensions creates a new DB file (old ones are preserved for rollback).
 

@@ -12,6 +12,7 @@ import numpy as np
 from .background_indexer import get_background_indexer
 from .config import get_config
 from .embeddings import get_embedding_backend
+from .ide_loader import _decode_workspace_dir_name
 from .models import Source
 from .peers import fan_out_search, merge_peer_results
 from .search_utils import (
@@ -346,9 +347,17 @@ class SearchIndex:
                 if not mask[i]:
                     continue
                 meta = self._metadata[i]
-                if workspace and not meta["workspace"].startswith(workspace):
-                    mask[i] = False
-                elif source and meta["source"] != source:
+                if workspace:
+                    stored_ws = meta["workspace"]
+                    # Bidirectional prefix match: session workspace may be a parent
+                    # of the query workspace (multi-root workspace) or vice versa
+                    if not (stored_ws.startswith(workspace) or workspace.startswith(stored_ws)):
+                        # Try decoding in case stored value is base64 (legacy index)
+                        decoded_ws = _decode_workspace_dir_name(stored_ws)
+                        if not (decoded_ws.startswith(workspace) or workspace.startswith(decoded_ws)):
+                            mask[i] = False
+                            continue
+                if source and meta["source"] != source:
                     mask[i] = False
                 elif after_ts and meta["timestamp"] < after_ts:
                     mask[i] = False
