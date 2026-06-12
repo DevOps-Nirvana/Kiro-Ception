@@ -64,12 +64,20 @@ The old single-process model had several pain points:
 - Engine writes `parent_pid` (via `os.getppid()`) to engine.json so the proxy can determine if it spawned the engine or another client did
 - Cross-platform: proxy checks `spawned_pid in (pid, parent_pid)` -- matches on `pid` for Unix (no shim) and `parent_pid` for Windows (shim sits between)
 
-### Workspace decode fix
+### Stale client detection (respawn loop prevention)
 
-- Kiro IDE encodes workspace paths as URL-safe base64 directory names, using `_` as padding (replacing standard `=`)
-- The old decode logic treated ALL `_` as base64 content (substitute for `/`), including the trailing padding characters, producing garbage bytes that failed UTF-8 decode
-- Fix: strip trailing `_` before substitution and padding
-- Search filter handles both old (base64) and new (decoded) workspace values in the DB without requiring a migration
+- Client caches its code fingerprint at startup (`_CLIENT_STARTUP_FINGERPRINT`)
+- On fingerprint mismatch with engine, re-reads disk to determine who is stale
+- If the engine's fingerprint matches current disk (engine is newer): logs a warning recommending reconnect, connects without killing
+- If the client's fingerprint matches current disk (engine is stale): kills and respawns as before
+- Prevents respawn loops when a stale window pings a newer engine
+
+### Workspace filtering (project-scoped search)
+
+- Bidirectional prefix matching: session workspace may be a parent of the query workspace (multi-root workspaces) or vice versa
+- Both `stored.startswith(query)` and `query.startswith(stored)` are accepted
+- Base64 decode fallback for legacy indexed workspace values
+- FTS search also matches bidirectionally with additional base64-encoded form
 
 ## Architecture
 

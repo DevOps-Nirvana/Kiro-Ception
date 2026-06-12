@@ -35,6 +35,18 @@ _ENGINE_STARTUP_TIMEOUT = 30  # seconds
 _HEALTH_CHECK_TIMEOUT = 5  # seconds per health check attempt
 _HEALTH_CHECK_RETRIES = 2
 
+# Fingerprint captured at process startup — represents what code this client loaded with.
+# This never changes for the lifetime of this process.
+_CLIENT_STARTUP_FINGERPRINT = None
+
+
+def _get_client_fingerprint() -> str:
+    """Get the client's startup fingerprint (computed once, cached)."""
+    global _CLIENT_STARTUP_FINGERPRINT
+    if _CLIENT_STARTUP_FINGERPRINT is None:
+        _CLIENT_STARTUP_FINGERPRINT = _compute_code_fingerprint()
+    return _CLIENT_STARTUP_FINGERPRINT
+
 
 def _compute_code_fingerprint() -> str:
     """Compute a hash of all source files in the kiro_ception package.
@@ -274,7 +286,7 @@ def ensure_engine_running() -> bool:
 
     Returns True if a healthy, up-to-date engine is available after this call.
     """
-    my_fingerprint = _compute_code_fingerprint()
+    my_fingerprint = _get_client_fingerprint()
     logger.info(f"Code fingerprint (client): {my_fingerprint}")
 
     # Check if an existing engine is available
@@ -317,7 +329,20 @@ def ensure_engine_running() -> bool:
                 if engine_fingerprint == my_fingerprint:
                     return True  # Healthy and up-to-date
                 else:
-                    logger.info("Fingerprint MISMATCH — restarting engine")
+                    # Fingerprint mismatch — but are WE stale or is the engine stale?
+                    # Re-read source from disk to get the current truth
+                    disk_fingerprint = _compute_code_fingerprint()
+                    if engine_fingerprint == disk_fingerprint:
+                        # Engine is NEWER than us. We're the stale client.
+                        # Don't kill the engine — just connect to it.
+                        logger.warning(
+                            f"Engine has newer code (fingerprint={engine_fingerprint}). "
+                            f"This client is stale (loaded fingerprint={my_fingerprint}). "
+                            f"Reconnect the MCP server to refresh this client."
+                        )
+                        return True
+                    else:
+                        logger.info("Fingerprint MISMATCH — engine is stale, restarting")
         else:
             logger.info(f"Engine health check returned status {resp.status_code}")
     except Exception as e:
