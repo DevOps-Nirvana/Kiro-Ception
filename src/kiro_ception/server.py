@@ -27,16 +27,30 @@ _initialized = False
 
 
 def _initialize():
-    """Ensure the engine process is running.
+    """Ensure the engine process is running and register this process as a follower.
 
     Spawns the engine subprocess if it's not already running.
     This is fast (<1s) if the engine is already healthy.
+
+    After confirming the engine is healthy, immediately registers this process's
+    PID via the EngineClient (which sends X-Follower-PID on every request).
+    This ensures the engine knows about us even if no tool call is ever made,
+    so it can shut down gracefully when we exit.
     """
     global _initialized
     if _initialized:
         return
     _initialized = True
     ensure_engine_running()
+
+    # Register our PID with the engine immediately so it tracks us as a follower.
+    # Without this, the engine's FollowerRegistry stays empty if no tool calls
+    # are made before the MCP process exits (e.g., power is uninstalled).
+    try:
+        client = get_engine_client()
+        client.health()
+    except Exception:
+        pass  # Non-fatal — PID will be registered on the first tool call anyway
 
 
 def _ensure_initialized():

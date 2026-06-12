@@ -602,6 +602,8 @@ def main():
 
     _last_follower_check: float = 0
     _FOLLOWER_CHECK_INTERVAL = 10  # Check follower liveness every 10s
+    _NO_FOLLOWER_TIMEOUT = 120  # Shut down if no follower registers within 2 minutes
+    _engine_start_time = time.time()
 
     print(f"HTTP server listening on 127.0.0.1:{port}")
     print(f"Dashboard: http://127.0.0.1:{port}/")
@@ -620,6 +622,14 @@ def main():
                     if not follower_registry.has_live_followers():
                         print("All followers are dead — shutting down")
                         break
+                elif now - _engine_start_time > _NO_FOLLOWER_TIMEOUT:
+                    # No follower ever registered — spawning client likely died
+                    # before making any requests. Shut down to avoid orphan.
+                    print(
+                        f"No followers registered within {_NO_FOLLOWER_TIMEOUT}s "
+                        f"— shutting down (orphan protection)"
+                    )
+                    break
     except KeyboardInterrupt:
         pass
     finally:
