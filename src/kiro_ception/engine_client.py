@@ -56,7 +56,7 @@ def _compute_code_fingerprint() -> str:
     is running stale code and should be restarted.
     """
     package_dir = Path(__file__).parent
-    hasher = hashlib.md5()
+    hasher = hashlib.md5()  # Used for change detection only, not cryptographic integrity
     for py_file in sorted(package_dir.glob("*.py")):
         hasher.update(py_file.read_bytes())
     return hasher.hexdigest()[:16]
