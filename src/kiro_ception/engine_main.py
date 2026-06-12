@@ -602,8 +602,8 @@ def main():
             now = time.time()
             if now - _last_follower_check >= _FOLLOWER_CHECK_INTERVAL:
                 _last_follower_check = now
-                # Only check once at least one follower has registered
-                if follower_registry.count > 0 or follower_registry.has_live_followers():
+                # Only shut down if at least one follower registered and all are now dead
+                if follower_registry.count > 0:
                     if not follower_registry.has_live_followers():
                         print("All followers are dead — shutting down")
                         break
