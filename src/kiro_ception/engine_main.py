@@ -32,6 +32,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -257,6 +258,7 @@ def _build_request_handler(search_handler, config_handler, indexer_getter, follo
                     self._send_json({"error": "not found"}, 404)
 
             except Exception as e:
+                print(f"POST {self.path} error: {traceback.format_exc()}", flush=True)
                 self._send_json({"error": str(e)}, 500)
 
         def do_GET(self):
@@ -379,6 +381,7 @@ def _build_request_handler(search_handler, config_handler, indexer_getter, follo
                     self._send_json({"error": "not found"}, 404)
 
             except Exception as e:
+                print(f"GET {self.path} error: {traceback.format_exc()}", flush=True)
                 self._send_json({"error": str(e)}, 500)
 
         def _send_dashboard(self):
