@@ -88,6 +88,7 @@ def search_project_history(
     max_results: int = 10,
     offset: int = 0,
     include_tool_context: bool = False,
+    workspace: str | None = None,
 ) -> dict:
     """
     Search conversation history for the CURRENT WORKSPACE only.
@@ -107,15 +108,20 @@ def search_project_history(
                 When false, only conversation messages (user prompts and assistant
                 responses) are matched. When true, tool context summaries are
                 also included as searchable content.
+        workspace: Workspace root path to scope results to. If provided, overrides
+                automatic workspace detection. Use this when the MCP server's
+                working directory differs from the project you're working in
+                (e.g., multi-root workspaces).
 
     Returns:
         Search results with matched messages, scores, context, and pagination info
     """
     _ensure_initialized()
     client = get_engine_client()
+    effective_workspace = workspace if workspace else _get_current_workspace()
     return client.search({
         "query": query,
-        "workspace": _get_current_workspace(),
+        "workspace": effective_workspace,
         "source": None,
         "after": after,
         "before": before,

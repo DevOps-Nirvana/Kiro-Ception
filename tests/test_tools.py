@@ -111,6 +111,36 @@ class TestSearchProjectHistory:
             assert call_args["include_tool_context"] is True
             assert call_args["workspace"] == "/ws"
 
+    def test_workspace_param_overrides_auto_detect(self, mock_client):
+        """When workspace is passed explicitly, it overrides _get_current_workspace()."""
+        with patch("kiro_ception.server._get_current_workspace", return_value="/wrong/path"):
+            from kiro_ception.server import search_project_history
+
+            search_project_history(query="test", workspace="/correct/project/path")
+
+            call_args = mock_client.search.call_args[0][0]
+            assert call_args["workspace"] == "/correct/project/path"
+
+    def test_workspace_param_none_uses_auto_detect(self, mock_client):
+        """When workspace is not passed (None), falls back to _get_current_workspace()."""
+        with patch("kiro_ception.server._get_current_workspace", return_value="/auto/detected"):
+            from kiro_ception.server import search_project_history
+
+            search_project_history(query="test")
+
+            call_args = mock_client.search.call_args[0][0]
+            assert call_args["workspace"] == "/auto/detected"
+
+    def test_workspace_param_empty_string_uses_auto_detect(self, mock_client):
+        """Empty string workspace falls back to auto-detect (only None/falsy skips)."""
+        with patch("kiro_ception.server._get_current_workspace", return_value="/auto/detected"):
+            from kiro_ception.server import search_project_history
+
+            search_project_history(query="test", workspace="")
+
+            call_args = mock_client.search.call_args[0][0]
+            assert call_args["workspace"] == "/auto/detected"
+
 
 # --- search_global_history ---
 
