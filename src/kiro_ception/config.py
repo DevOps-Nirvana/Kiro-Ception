@@ -151,6 +151,7 @@ class ServerConfig:
     """Server/inter-process communication configuration."""
 
     engine_port: int = 19742  # Localhost-only HTTP port for engine
+    listen_address: str = ""  # Bind address ("" = auto: 0.0.0.0 if peers enabled, else 127.0.0.1)
     deferred_init: bool = False  # If True, delay engine election until first tool call
     heartbeat_interval_seconds: int = 30  # How often to check engine liveness
     engine_log_file: str = ""  # Path to engine log file (empty = no file logging)

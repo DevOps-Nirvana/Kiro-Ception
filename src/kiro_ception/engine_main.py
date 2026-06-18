@@ -206,10 +206,16 @@ def _build_request_handler(search_handler, config_handler, indexer_getter, follo
                 length = int(self.headers.get("Content-Length", 0))
                 raw_body = self.rfile.read(length) if length > 0 else b"{}"
 
-                # Decrypt if encrypted
+                # Decrypt if encrypted (only enforce for non-loopback peers)
+                client_ip = self.client_address[0] if self.client_address else None
+                is_loopback = client_ip in ("127.0.0.1", "::1", None)
                 try:
                     from .peers import decrypt_request_body
-                    body = decrypt_request_body(raw_body, content_type)
+                    if is_loopback and content_type != "application/x-kiroception-encrypted":
+                        # Local MCP proxy — skip encryption check
+                        body = json.loads(raw_body) if raw_body else {}
+                    else:
+                        body = decrypt_request_body(raw_body, content_type)
                 except PermissionError as e:
                     self.send_response(401)
                     self.send_header("Content-Type", "application/json")
@@ -221,7 +227,10 @@ def _build_request_handler(search_handler, config_handler, indexer_getter, follo
 
                 if self.path == "/search":
                     result = search_handler(body)
-                    self._send_response_maybe_encrypted(result)
+                    if is_loopback:
+                        self._send_json(result)
+                    else:
+                        self._send_response_maybe_encrypted(result)
 
                 elif self.path == "/reindex":
                     indexer = indexer_getter()
@@ -429,6 +438,15 @@ def main():
     cache_dir = expand_path(config.embedding.cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
+    # Determine bind address: use config if set, otherwise auto-detect
+    # (0.0.0.0 if peers enabled for remote connectivity, 127.0.0.1 otherwise)
+    if config.server.listen_address:
+        bind_address = config.server.listen_address
+    elif config.peers.enabled:
+        bind_address = "0.0.0.0"
+    else:
+        bind_address = "127.0.0.1"
+
     # Configure output — redirect stdout/stderr to file if configured
     if config.server.engine_log_file:
         log_path = expand_path(config.server.engine_log_file)
@@ -530,7 +548,7 @@ def main():
             },
             "server": {
                 "engine_port": current_config.server.engine_port,
-                "listen_address": f"127.0.0.1:{port}",
+                "listen_address": f"{bind_address}:{port}",
             },
             "peers": {
                 "enabled": current_config.peers.enabled,
@@ -572,12 +590,12 @@ def main():
 
     # Try primary port, fall back to +1
     try:
-        server = ThreadingHTTPServer(("127.0.0.1", port), RequestHandler)
+        server = ThreadingHTTPServer((bind_address, port), RequestHandler)
     except OSError:
         port += 1
         _write_engine_info(port, os.getpid(), cache_dir)
         try:
-            server = ThreadingHTTPServer(("127.0.0.1", port), RequestHandler)
+            server = ThreadingHTTPServer((bind_address, port), RequestHandler)
         except OSError:
             print(
                 f"ERROR: Could not bind to port {port - 1} or {port}. "
