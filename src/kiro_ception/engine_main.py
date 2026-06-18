@@ -236,6 +236,8 @@ def _build_request_handler(search_handler, config_handler, indexer_getter, follo
                     body = json.loads(raw_body) if raw_body else {}
 
                 if self.path == "/search":
+                    if not is_loopback:
+                        body["from_peer"] = True
                     result = search_handler(body)
                     if is_loopback:
                         self._send_json(result)
