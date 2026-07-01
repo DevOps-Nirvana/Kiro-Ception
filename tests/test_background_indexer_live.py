@@ -550,14 +550,17 @@ class TestBackgroundIndexerLive:
 
             # Now trigger reindex — this will wake the loop, which will
             # call get_embedding_backend() again and get backend_b
+            trigger_time = time.time()
             indexer.trigger_reindex()
 
-            # Wait for the second pass to complete (DB switch + re-embedding)
+            # Wait for the second pass to fully complete:
+            # DB must switch AND a new completed_at must be set after trigger
             deadline = time.time() + 15
             while time.time() < deadline:
-                # Check if the DB path changed AND indexer finished
                 if (indexer.cache and indexer.cache.db_path != first_db
-                        and indexer.status.state == IndexerState.IDLE):
+                        and indexer.status.state == IndexerState.IDLE
+                        and indexer.status.completed_at
+                        and indexer.status.completed_at > trigger_time):
                     break
                 time.sleep(0.05)
 
