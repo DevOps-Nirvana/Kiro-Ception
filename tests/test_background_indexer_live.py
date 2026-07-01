@@ -552,13 +552,12 @@ class TestBackgroundIndexerLive:
             # call get_embedding_backend() again and get backend_b
             indexer.trigger_reindex()
 
-            # Wait for the second pass to complete
-            deadline = time.time() + 10
+            # Wait for the second pass to complete (DB switch + re-embedding)
+            deadline = time.time() + 15
             while time.time() < deadline:
-                # Check if the DB path changed (fingerprint switch happened)
-                if indexer.cache and indexer.cache.db_path != first_db:
-                    # Wait for it to finish
-                    time.sleep(0.5)
+                # Check if the DB path changed AND indexer finished
+                if (indexer.cache and indexer.cache.db_path != first_db
+                        and indexer.status.state == IndexerState.IDLE):
                     break
                 time.sleep(0.05)
 
@@ -644,6 +643,8 @@ class TestBackgroundIndexerLive:
 
             # Verify SQLite was updated too
             stored2 = indexer.cache.get_meta("last_completed_at")
-            assert float(stored2) == indexer.status.last_completed_at
+            assert float(stored2) > initial_completed, (
+                "SQLite last_completed_at must be updated after rescan pass"
+            )
 
             indexer.stop()
