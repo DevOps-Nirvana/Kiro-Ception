@@ -74,14 +74,29 @@ def _preload_native_extensions(backend_type: str):
         print(f"Preload skipped ({e}) after {elapsed:.1f}s")
 
 
-def _write_engine_info(port: int, pid: int, cache_dir: Path):
-    """Write engine info atomically for followers to discover."""
+# This module is the engine process entrypoint, so import time is process
+# start time. Captured once so engine.json can report a fixed started_at.
+_PROCESS_START_TIME = time.time()
+
+
+def _write_engine_info(port: int, pid: int, cache_dir: Path, started_at: float):
+    """Write engine info atomically for followers to discover.
+
+    started_at must be this engine's real start time and stay fixed for the
+    life of the process. The heartbeat rewrites this file periodically; if it
+    refreshed started_at too, a stale engine would keep looking freshly
+    spawned and spawn_engine()'s "started_at > spawn_time" check — its only
+    way to tell our spawn from a leftover one — would always pass.
+
+    heartbeat_at carries the liveness signal instead.
+    """
     info_path = cache_dir / "engine.json"
     info = {
         "port": port,
         "pid": pid,
         "parent_pid": os.getppid(),
-        "started_at": time.time(),
+        "started_at": started_at,
+        "heartbeat_at": time.time(),
     }
     fd, tmp_path = tempfile.mkstemp(dir=str(cache_dir), suffix=".tmp")
     try:
@@ -479,18 +494,20 @@ def main():
         bind_address = "127.0.0.1"
 
     # Configure output — redirect stdout/stderr to file if configured
-    if config.server.engine_log_file:
-        log_path = expand_path(config.server.engine_log_file)
+    log_path = config.engine_log_path
+    if log_path:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_fh = open(log_path, "a", encoding="utf-8")
         sys.stdout = log_fh
         sys.stderr = log_fh
         _log(f"Engine starting (pid={os.getpid()}, log={log_path})")
 
-    # === PRELOAD NATIVE EXTENSIONS (before any threads) ===
-    _preload_native_extensions(config.embedding.backend)
-
     # === ACQUIRE LEADERSHIP (file lock) ===
+    # This must come BEFORE the native-extension preload. Only one process can
+    # win the lock, and the preload costs ~12s in isolation — far more when
+    # several engines start at once and contend importing torch. Electing first
+    # lets losers exit in milliseconds instead of paying the whole import
+    # before discovering they are not the leader.
     from filelock import FileLock, Timeout
 
     lock_path = cache_dir / "engine.lock"
@@ -502,8 +519,14 @@ def main():
         sys.exit(1)
 
     # Write engine info
-    _write_engine_info(port, os.getpid(), cache_dir)
+    _write_engine_info(port, os.getpid(), cache_dir, _PROCESS_START_TIME)
     _log(f"Acquired engineship (pid={os.getpid()}, port={port})")
+
+    # === PRELOAD NATIVE EXTENSIONS (before any threads) ===
+    # Still has to happen before any thread starts — see the function's
+    # docstring for the Windows loader-lock deadlock this avoids — but now only
+    # the winner pays for it.
+    _preload_native_extensions(config.embedding.backend)
 
     # === START BACKGROUND INDEXER ===
     from .background_indexer import get_background_indexer
@@ -543,6 +566,8 @@ def main():
                 "cache_database": str(indexer.cache.db_path) if indexer.cache else "not initialized",
                 "engine_lock": str(lock_path),
                 "engine_info": str(cache_dir / "engine.json"),
+                "engine_log": str(current_config.engine_log_path)
+                if current_config.engine_log_path else "disabled",
             },
             "sources": {
                 "cli": {
@@ -597,12 +622,12 @@ def main():
 
     # === START HEARTBEAT THREAD ===
     def heartbeat_loop():
-        """Periodically refresh engine.json timestamp."""
+        """Periodically refresh engine.json's heartbeat_at timestamp."""
         interval = config.server.heartbeat_interval_seconds
         while True:
             time.sleep(interval)
             try:
-                _write_engine_info(port, os.getpid(), cache_dir)
+                _write_engine_info(port, os.getpid(), cache_dir, _PROCESS_START_TIME)
             except Exception as e:
                 _log(f"Heartbeat write failed: {e}")
 
@@ -625,7 +650,7 @@ def main():
         server = ThreadingHTTPServer((bind_address, port), RequestHandler)
     except OSError:
         port += 1
-        _write_engine_info(port, os.getpid(), cache_dir)
+        _write_engine_info(port, os.getpid(), cache_dir, _PROCESS_START_TIME)
         try:
             server = ThreadingHTTPServer((bind_address, port), RequestHandler)
         except OSError:
@@ -713,10 +738,19 @@ if __name__ == "__main__":
             f"{_tb.format_exc()}\n"
             f"{'='*60}\n"
         )
-        # Try to write to the log file even if stdout redirection failed
+        # Try to write to the log file even if stdout redirection failed.
+        # Resolve through config so the crash lands in THIS instance's cache
+        # directory rather than a hardcoded shared path.
         try:
             from pathlib import Path as _Path
-            crash_log = _Path("~/.cache/kiro-ception/engine.log").expanduser()
+
+            try:
+                from .config import get_config as _get_config
+                crash_log = _get_config().engine_log_path
+            except Exception:
+                crash_log = None
+            if crash_log is None:
+                crash_log = _Path("~/.cache/kiro-ception/engine.log").expanduser()
             crash_log.parent.mkdir(parents=True, exist_ok=True)
             with open(crash_log, "a", encoding="utf-8") as f:
                 f.write(crash_msg)
