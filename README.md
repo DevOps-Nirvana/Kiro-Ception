@@ -25,7 +25,7 @@ Kiro Ception gives Kiro a long-term memory, persistent recall that spans every s
 
 Kiro Ception is an [MCP Power](https://kiro.dev/docs/powers/) that runs as a background service alongside your Kiro IDE. It:
 
-1. **Discovers** all Kiro CLI and IDE session files on your machine, plus Claude Code transcripts
+1. **Discovers** all Kiro CLI and IDE session files on your machine, plus Claude Code transcripts and GitHub Copilot Chat (VS Code) sessions
 2. **Extracts** meaningful messages (filtering out system prompts and boilerplate, condensing long code blocks into `[code:lang]` placeholders)
 3. **Embeds** each message into a vector representation using your configured model
 4. **Indexes** everything into an in-memory numpy matrix for instant hybrid search (semantic + FTS5 keyword)
@@ -186,6 +186,49 @@ The `source` parameter on `search_global_history` accepts `"claude"` alongside `
 3. `CLAUDE_PROJECT_DIR` (set by Claude Code)
 4. The current working directory
 
+## GitHub Copilot Support
+
+Kiro Ception also indexes [GitHub Copilot Chat](https://github.com/features/copilot) (VS Code) conversations alongside Kiro CLI/IDE and Claude Code history. It is on by default and needs no configuration if VS Code stores its chat sessions in the standard location.
+
+VS Code writes one file per chat session under each workspace's storage directory:
+
+```
+<Code>/User/workspaceStorage/<hash>/chatSessions/<session-uuid>.json    (older)
+<Code>/User/workspaceStorage/<hash>/chatSessions/<session-uuid>.jsonl   (current)
+```
+
+The `.json` form is a single session object with a `requests` array. The `.jsonl` form is an event/patch log — line 0 is a base snapshot (`{"kind":0,"v":{...}}`), and subsequent lines are keyed patches (`{"kind":1,"k":[...],"v":...}`) that are replayed to reconstruct the same object. Both materialize to the same `requests` structure.
+
+Workspace attribution comes from the sibling `<hash>/workspace.json` (a `file://` URI under a `folder` or `workspace` key), decoded back to a filesystem path so `search_project_history` scoping stays accurate.
+
+### What Gets Indexed
+
+| Record | Indexed as | Notes |
+|--------|-----------|-------|
+| request `message.text` | Conversation | The user's prompt for each turn |
+| request `response` | Conversation | Assistant prose stitched from the response parts; UI/tool-plumbing parts (`mcpServersStarting`, `toolInvocationSerialized`, `codeblockUri`, etc.) are dropped; fenced code blocks condensed to `[code:lang]` placeholders |
+| Empty sessions | — | Sessions with no `requests` (abandoned chat panes) produce nothing |
+
+### Configuration
+
+```toml
+[sources.copilot]
+enabled = true
+
+# Every root that exists is scanned — unlike the cli/ide sources, which are
+# first-match-wins — so VS Code stable + Insiders can be indexed together.
+roots = [
+    "~/AppData/Roaming/Code/User/workspaceStorage",
+    "~/AppData/Roaming/Code - Insiders/User/workspaceStorage",
+    "~/Library/Application Support/Code/User/workspaceStorage",
+    "~/Library/Application Support/Code - Insiders/User/workspaceStorage",
+    "~/.config/Code/User/workspaceStorage",
+    "~/.config/Code - Insiders/User/workspaceStorage",
+]
+```
+
+To disable Copilot indexing entirely, set `enabled = false`. The `source` parameter on `search_global_history` accepts `"copilot"` alongside `"cli"`, `"ide"`, and `"claude"`.
+
 ## Configuration
 
 Create `~/.config/kiro-ception/config.toml` to customize behavior. If this file doesn't exist, sensible defaults are used (local CPU-based embeddings with `all-MiniLM-L6-v2`).  Query the tool `get_config` for full information on your file location(s) for your config and database.
@@ -258,7 +301,7 @@ Kiro can call these tools naturally during conversation:
 | Tool | Purpose |
 |------|---------|
 | `search_project_history` | Search conversations scoped to the current workspace |
-| `search_global_history` | Search across all workspaces (supports `source` filter: all/cli/ide) |
+| `search_global_history` | Search across all workspaces (supports `source` filter: all/cli/ide/claude/copilot) |
 | `get_indexing_status` | Check indexer progress, rate, errors, ETA |
 | `rescan` | Trigger a rescan for new sessions (`full=True` to re-read everything) |
 | `get_config` | Show effective config, paths, cache stats, instance role, etc |
