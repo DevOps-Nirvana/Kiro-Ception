@@ -753,3 +753,38 @@ class TestEngineSearchOperators:
         )
         assert last_prod < first_non_prod
 
+    def test_recency_boost_applies_even_with_soft_operator(
+        self, cache, mock_backend, fake_sessions, fake_messages
+    ):
+        # Option A: recency is folded into score BEFORE partitioning, so it must
+        # run even when a promote/demote operator is active (previously it was
+        # suppressed). Spy on _apply_recency_boost to prove it is invoked.
+        from kiro_ception import search as search_mod
+
+        self._index(cache, mock_backend, fake_sessions, fake_messages)
+
+        indexer_mock = MagicMock()
+        indexer_mock.cache = cache
+        indexer_mock.backend = mock_backend
+
+        real_boost = search_mod._apply_recency_boost
+        calls = {"n": 0}
+
+        def spy(results, oldest):
+            calls["n"] += 1
+            return real_boost(results, oldest)
+
+        with patch.object(search_mod, "get_background_indexer", return_value=indexer_mock):
+            si = search_mod.SearchIndex()
+            si._refresh()
+            with patch.object(search_mod, "get_search_index", return_value=si):
+                with patch.object(search_mod, "_apply_recency_boost", side_effect=spy):
+                    search_mod.engine_search(
+                        query="deploy production",
+                        workspace=None, source=None, after=None, before=None,
+                        context_size=3, threshold=0.3, max_results=20, offset=0,
+                        demote_terms=["production"],
+                    )
+
+        assert calls["n"] == 1, "recency boost must run even with a soft operator active"
+

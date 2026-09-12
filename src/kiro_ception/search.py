@@ -672,8 +672,17 @@ def engine_search(
 
     # --- Operator model (require / exclude / promote / demote) ---
     # Retrieve each operator's term set as its own search (set C) and apply the
-    # 2x2 by uuid. This runs BEFORE recency/dedup/format so pagination counts
-    # reflect the post-operator set.
+    # 2x2 by uuid. Recency is folded into `score` FIRST (below) so the bands are
+    # ranked by recency-adjusted relevance; apply_set_operators then re-sorts
+    # each band by score, preserving the recency signal within each band.
+    #
+    # Recency boost: recent messages get a slight score advantage. Applied
+    # unconditionally BEFORE the operators so the promote/neutral/demote bands
+    # are internally ordered by recency-adjusted score. (It re-sorts the whole
+    # list by score, which the operator partition then re-partitions — the
+    # band structure wins, recency only orders within each band.)
+    scored_results = _apply_recency_boost(scored_results, search_index.oldest_timestamp)
+
     if require_terms or exclude_terms or promote_terms or demote_terms:
         def uuid_set(terms: list[str]) -> set[str]:
             return _retrieve_uuid_set(
@@ -697,13 +706,6 @@ def engine_search(
             promote_uuids=uuid_set(promote_terms) if promote_terms else None,
             demote_uuids=uuid_set(demote_terms) if demote_terms else None,
         )
-
-    # Apply recency boost: recent messages get a slight score advantage.
-    # NOTE: recency re-sorts by score, which would undo promote/demote ordering.
-    # Only apply it when no soft-ranking operator is in play so the operators'
-    # intent is preserved.
-    if not (promote_terms or demote_terms):
-        scored_results = _apply_recency_boost(scored_results, search_index.oldest_timestamp)
 
     # Deduplicate overlapping context windows. Preserve operator ordering when a
     # promote/demote partition is in effect (a score re-sort would undo it).

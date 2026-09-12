@@ -69,9 +69,12 @@ def apply_set_operators(
     Hard membership changes run before soft reordering — there is no point
     ranking results that are about to be removed.
 
-    Input is assumed already sorted by score descending. Relative order within
-    each promote/neutral/demote partition is preserved (stable partition), so
-    relevance ordering is retained inside each band.
+    Input is assumed already sorted by score descending. Each promote/neutral/
+    demote band is additionally re-sorted by score descending, so relevance
+    ordering is retained inside each band even if an upstream step (e.g. the
+    recency boost) adjusted scores after the initial sort. The bands themselves
+    remain absolute: a demoted result never outranks a neutral one, regardless
+    of score.
 
     Args:
         scored_results: results (dicts with at least "uuid"), score-desc order.
@@ -108,6 +111,12 @@ def apply_set_operators(
                 demoted.append(r)
             else:
                 neutral.append(r)
+        # Re-sort each band by score-desc so within-band relevance ordering is
+        # correct even when scores were adjusted upstream (recency boost). The
+        # partition stays absolute; only intra-band order is by score.
+        promoted.sort(key=lambda r: r["score"], reverse=True)
+        neutral.sort(key=lambda r: r["score"], reverse=True)
+        demoted.sort(key=lambda r: r["score"], reverse=True)
         results = promoted + neutral + demoted
 
     return results

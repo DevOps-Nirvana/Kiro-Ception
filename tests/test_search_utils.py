@@ -73,6 +73,34 @@ class TestApplySetOperators:
         out = apply_set_operators(rows, promote_uuids={"a"}, demote_uuids={"a"})
         assert [r["uuid"] for r in out] == ["a", "b"]
 
+    def test_bands_are_internally_sorted_by_score(self):
+        # Scores deliberately NOT in uuid order, to prove each band re-sorts by
+        # score rather than merely preserving input order. This is the Option A
+        # behavior: recency (folded into score upstream) orders within a band.
+        rows = [
+            {"uuid": "a", "score": 0.10},
+            {"uuid": "b", "score": 0.90},
+            {"uuid": "c", "score": 0.20},
+            {"uuid": "d", "score": 0.80},
+            {"uuid": "e", "score": 0.50},
+        ]
+        # promote {a,b}, demote {c,d}, neutral {e}
+        out = apply_set_operators(rows, promote_uuids={"a", "b"}, demote_uuids={"c", "d"})
+        # promoted band sorted by score: b(0.9) > a(0.1)
+        # neutral band: e
+        # demoted band sorted by score: d(0.8) > c(0.2)
+        assert [r["uuid"] for r in out] == ["b", "a", "e", "d", "c"]
+
+    def test_band_partition_is_absolute_regardless_of_score(self):
+        # A high-scoring demoted result must still rank below a low-scoring
+        # neutral one — the band boundary is absolute, score only orders within.
+        rows = [
+            {"uuid": "hi_demoted", "score": 0.99},
+            {"uuid": "lo_neutral", "score": 0.01},
+        ]
+        out = apply_set_operators(rows, demote_uuids={"hi_demoted"})
+        assert [r["uuid"] for r in out] == ["lo_neutral", "hi_demoted"]
+
     def test_empty_require_set_is_noop_not_wipeout(self):
         # An empty/falsy require set must NOT filter everything out.
         rows = _rows("a", "b")
