@@ -24,6 +24,7 @@ from argon2.low_level import Type, hash_secret_raw
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from .config import get_config
+from .search_utils import token_excluded
 
 logger = logging.getLogger(__name__)
 
@@ -243,15 +244,29 @@ def fan_out_search(request: dict) -> list[dict]:
     return results
 
 
-def merge_peer_results(local_response: dict, peer_responses: list[dict]) -> dict:
+def merge_peer_results(
+    local_response: dict,
+    peer_responses: list[dict],
+    exclude_terms: list[str] | None = None,
+) -> dict:
     """Merge local search results with peer results.
 
     Combines all results, deduplicates by UUID (keeps highest score),
     and sorts by score descending. Pagination is re-applied.
 
+    When exclude_terms is provided, peer-returned results are scrubbed with a
+    whole-token post-filter over matched_message.content. This is a best-effort
+    safety net: peers apply the full semantic exclude against their own index,
+    but a peer running older code that ignores the parameter would return
+    unfiltered rows — this local token scrub still removes obvious matches, so
+    version skew degrades to over-inclusion, never to inverted results. (Full
+    semantic exclusion can't be re-run here because we don't have the peer's
+    index to retrieve set C from.)
+
     Args:
         local_response: The local search response dict.
         peer_responses: List of response dicts from peers.
+        exclude_terms: Optional terms to scrub from peer results (token-based).
 
     Returns:
         Merged response dict with combined results.
@@ -259,11 +274,18 @@ def merge_peer_results(local_response: dict, peer_responses: list[dict]) -> dict
     if not peer_responses:
         return local_response
 
+    exclude_terms = exclude_terms or []
+
     # Collect all results
     all_results = list(local_response.get("results", []))
 
     for peer_resp in peer_responses:
         for result in peer_resp.get("results", []):
+            # Scrub peer rows an older peer may have failed to exclude.
+            if exclude_terms:
+                content = result.get("matched_message", {}).get("content", "")
+                if token_excluded(content, exclude_terms):
+                    continue
             all_results.append(result)
 
     # Deduplicate by matched_message UUID (keep highest score)

@@ -237,6 +237,105 @@ class TestMergePeerResults:
         assert "peer" in merged["hint"]
 
 
+class TestMergePeerResultsNegativeTerms:
+    def test_peer_row_with_negative_term_is_scrubbed(self):
+        local = {
+            "results": [{"matched_message": {"uuid": "a", "content": "deploy to prod"}, "score": 0.9}],
+            "query": "deploy",
+            "total_matches": 1,
+            "offset": 0,
+        }
+        peer = {
+            "results": [
+                {"matched_message": {"uuid": "b", "content": "deploy to staging first"}, "score": 0.95},
+                {"matched_message": {"uuid": "c", "content": "deploy to prod cluster"}, "score": 0.8},
+            ],
+        }
+        merged = merge_peer_results(local, [peer], ["staging"])
+
+        uuids = [r["matched_message"]["uuid"] for r in merged["results"]]
+        # The staging peer row (b) is scrubbed before merge, so it never appears
+        # and is not counted. Rows a and c remain (total 2); pagination may show
+        # only the top page, but b must be gone and the count must exclude it.
+        assert "b" not in uuids
+        assert merged["total_matches"] == 2  # a and c only; b scrubbed
+        all_uuids = {"a", "c"}
+        assert set(uuids).issubset(all_uuids)
+
+    def test_old_peer_returns_unfiltered_still_ends_filtered(self):
+        """Simulate an old peer that ignores negative_terms and returns a row
+        it should have excluded — the local scrub still removes it."""
+        local = {
+            "results": [],
+            "query": "deploy",
+            "total_matches": 0,
+            "offset": 0,
+        }
+        old_peer = {
+            "results": [
+                {"matched_message": {"uuid": "x", "content": "deploy to staging"}, "score": 0.9},
+            ],
+        }
+        merged = merge_peer_results(local, [old_peer], ["staging"])
+        assert merged["results"] == []
+        assert merged["total_matches"] == 0
+
+    def test_empty_negative_terms_keeps_all_peer_rows(self):
+        local = {"results": [], "query": "deploy", "total_matches": 0, "offset": 0}
+        peer = {
+            "results": [
+                {"matched_message": {"uuid": "b", "content": "deploy to staging"}, "score": 0.9},
+            ],
+        }
+        merged = merge_peer_results(local, [peer], [])
+        uuids = [r["matched_message"]["uuid"] for r in merged["results"]]
+        assert "b" in uuids
+
+    def test_missing_content_key_does_not_crash(self):
+        """Peer rows without a content field are treated as non-matching."""
+        local = {"results": [], "query": "deploy", "total_matches": 0, "offset": 0}
+        peer = {"results": [{"matched_message": {"uuid": "b"}, "score": 0.9}]}
+        merged = merge_peer_results(local, [peer], ["staging"])
+        # No content to match against -> row survives
+        assert [r["matched_message"]["uuid"] for r in merged["results"]] == ["b"]
+
+
+class TestSearchWithPeersForwarding:
+    def test_peer_request_includes_operator_terms(self):
+        from kiro_ception import search as search_mod
+
+        local_response = {"results": [], "query": "deploy", "total_matches": 0, "offset": 0}
+        captured = {}
+
+        def fake_fan_out(request):
+            captured.update(request)
+            return []  # no peer responses
+
+        with patch.object(search_mod, "fan_out_search", side_effect=fake_fan_out):
+            search_mod._search_with_peers(
+                local_response,
+                query="deploy",
+                workspace=None,
+                source=None,
+                after=None,
+                before=None,
+                context_size=3,
+                threshold=0.2,
+                max_results=10,
+                offset=0,
+                include_tool_context=False,
+                require_terms=["prod"],
+                exclude_terms=["staging"],
+                promote_terms=["rollback"],
+                demote_terms=["draft"],
+            )
+
+        assert captured.get("require_terms") == ["prod"]
+        assert captured.get("exclude_terms") == ["staging"]
+        assert captured.get("promote_terms") == ["rollback"]
+        assert captured.get("demote_terms") == ["draft"]
+
+
 # --- Fan-out search ---
 
 

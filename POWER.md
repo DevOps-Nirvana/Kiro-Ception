@@ -82,6 +82,24 @@ User: "Why did we choose Go over .NET for that service?"
 → search_global_history(query="Go vs .NET decision reasoning")
 ```
 
+When the user wants to filter or reorder results by a second topic:
+- "...but not the staging stuff" → `exclude_terms`
+- "only the ones that also cover X" → `require_terms`
+- "rank the Y ones lower / higher" → `demote_terms` / `promote_terms`
+- "this and this, but NOT that"
+
+Each operator term is matched by *meaning* (run as its own search), not just
+literal words. `require`/`exclude` add or remove results; `promote`/`demote` only
+reorder (nothing is hidden — prefer these when unsure).
+
+```
+User: "How did we handle deploys, but not the staging ones?"
+→ search_global_history(query="deploy process", exclude_terms=["staging"])
+
+User: "Auth work, but the OAuth stuff is less relevant right now"
+→ search_global_history(query="authentication", demote_terms=["oauth"])
+```
+
 ### 6. Unfinished or Continuing Work
 When the user references where they left off:
 - "Where did we leave off?"
@@ -146,8 +164,8 @@ User: "Re-index everything from scratch"
 
 | Tool | Scope | Use Case |
 |------|-------|----------|
-| `search_project_history` | Current workspace | Bugs, decisions, implementations in *this* codebase |
-| `search_global_history` | All workspaces | User preferences, patterns across *all* work. Optional `source` param: `"all"` (default), `"cli"`, or `"ide"` |
+| `search_project_history` | Current workspace | Bugs, decisions, implementations in *this* codebase. Optional `require_terms`/`exclude_terms` (hard filter) and `promote_terms`/`demote_terms` (soft reorder) refine results by meaning |
+| `search_global_history` | All workspaces | User preferences, patterns across *all* work. Optional `source` param: `"all"` (default), `"cli"`, or `"ide"`. Same `require`/`exclude`/`promote`/`demote` operators |
 
 ### Management Tools
 

@@ -633,3 +633,87 @@ class TestIndexingStatusEdgeCases:
             "started_at", "completed_at", "last_completed_at",
         }
         assert expected_keys.issubset(set(d.keys()))
+
+
+
+# --- Negative-term exclusion edge cases ---
+
+
+class TestNegativeTermsEdgeCases:
+    def _cache(self, tmp_path):
+        with patch(
+            "kiro_ception.cache._get_cache_db_path",
+            lambda fp: tmp_path / f"cache_{hashlib.md5(fp.encode()).hexdigest()[:12]}.db",
+        ):
+            cache = EmbeddingCache("test:neg:64")
+            _ = cache.conn
+            return cache
+
+    def _seed(self, cache):
+        now = time.time()
+        cache.put_messages_batch([
+            ("m1", "s1", "/w", now, "user",
+             "deploy to prod", 0, "ide", "h1", "conversation", None),
+            ("m2", "s1", "/w", now, "user",
+             "deploy to staging", 1, "ide", "h2", "conversation", None),
+        ])
+
+    def test_negative_equals_positive_returns_empty(self, tmp_path):
+        cache = self._cache(tmp_path)
+        self._seed(cache)
+        try:
+            results = cache.fts_search("deploy", negative_terms=["deploy"])
+            assert results == []
+        finally:
+            cache.close()
+
+    def test_negative_only_query_returns_empty(self, tmp_path):
+        """No positive tokens -> FTS cannot run -> [] (no crash)."""
+        cache = self._cache(tmp_path)
+        self._seed(cache)
+        try:
+            assert cache.fts_search("", negative_terms=["staging"]) == []
+            assert cache.fts_search("   ", negative_terms=["staging"]) == []
+        finally:
+            cache.close()
+
+    def test_single_surviving_row_bm25_normalization_is_sane(self, tmp_path):
+        """When NOT prunes down to one row, score normalization must not
+        divide-by-zero and must yield a valid 0-1 score."""
+        cache = self._cache(tmp_path)
+        self._seed(cache)
+        try:
+            results = cache.fts_search("deploy", negative_terms=["staging"])
+            assert len(results) == 1
+            score = results[0]["score"]
+            assert 0.0 <= score <= 1.0
+            assert results[0]["content"] == "deploy to prod"
+        finally:
+            cache.close()
+
+    def test_all_excluded_yields_empty_with_coherent_hint(self):
+        """A post-filter that removes every result still formats cleanly."""
+        from kiro_ception.search_utils import format_search_response
+
+        response = format_search_response(
+            scored_results=[],
+            query="deploy",
+            offset=0,
+            max_results=10,
+            context_size=3,
+            get_session_messages=lambda _sid: [],
+        )
+        assert response["results"] == []
+        assert response["total_matches"] == 0
+        assert "No matches found" in response["hint"]
+
+    def test_post_filter_removes_vector_only_row(self):
+        """token_excluded drops a flat result dict by whole-token match on content."""
+        from kiro_ception.search_utils import token_excluded
+
+        rows = [
+            {"uuid": "a", "content": "deploy to prod"},
+            {"uuid": "b", "content": "deploy to staging"},
+        ]
+        kept = [r for r in rows if not token_excluded(r.get("content", ""), ["staging"])]
+        assert [r["uuid"] for r in kept] == ["a"]

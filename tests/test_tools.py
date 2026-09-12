@@ -98,6 +98,10 @@ class TestSearchProjectHistory:
                 max_results=20,
                 offset=10,
                 include_tool_context=True,
+                require_terms=["prod"],
+                exclude_terms=["staging", "draft"],
+                promote_terms=["rollback"],
+                demote_terms=["wip"],
             )
 
             call_args = mock_client.search.call_args[0][0]
@@ -110,6 +114,22 @@ class TestSearchProjectHistory:
             assert call_args["offset"] == 10
             assert call_args["include_tool_context"] is True
             assert call_args["workspace"] == "/ws"
+            assert call_args["require_terms"] == ["prod"]
+            assert call_args["exclude_terms"] == ["staging", "draft"]
+            assert call_args["promote_terms"] == ["rollback"]
+            assert call_args["demote_terms"] == ["wip"]
+
+    def test_operator_terms_default_to_empty_lists(self, mock_client):
+        with patch("kiro_ception.server._get_current_workspace", return_value="/ws"):
+            from kiro_ception.server import search_project_history
+
+            search_project_history(query="hello")
+
+            call_args = mock_client.search.call_args[0][0]
+            assert call_args["require_terms"] == []
+            assert call_args["exclude_terms"] == []
+            assert call_args["promote_terms"] == []
+            assert call_args["demote_terms"] == []
 
     def test_workspace_param_overrides_auto_detect(self, mock_client):
         """When workspace is passed explicitly, it overrides _get_current_workspace()."""
@@ -179,6 +199,32 @@ class TestSearchGlobalHistory:
         search_global_history(query="test", source="all")
         call_args = mock_client.search.call_args[0][0]
         assert call_args["source"] is None
+
+    def test_operator_terms_forwarded(self, mock_client):
+        from kiro_ception.server import search_global_history
+
+        search_global_history(
+            query="deploy",
+            require_terms=["prod"],
+            exclude_terms=["staging"],
+            promote_terms=["rollback"],
+            demote_terms=["wip"],
+        )
+        call_args = mock_client.search.call_args[0][0]
+        assert call_args["require_terms"] == ["prod"]
+        assert call_args["exclude_terms"] == ["staging"]
+        assert call_args["promote_terms"] == ["rollback"]
+        assert call_args["demote_terms"] == ["wip"]
+
+    def test_operator_terms_default_to_empty_lists(self, mock_client):
+        from kiro_ception.server import search_global_history
+
+        search_global_history(query="deploy")
+        call_args = mock_client.search.call_args[0][0]
+        assert call_args["require_terms"] == []
+        assert call_args["exclude_terms"] == []
+        assert call_args["promote_terms"] == []
+        assert call_args["demote_terms"] == []
 
 
 # --- get_indexing_status ---

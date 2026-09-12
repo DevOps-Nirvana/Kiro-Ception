@@ -16,6 +16,7 @@ from .ide_loader import _decode_workspace_dir_name
 from .models import Source
 from .peers import fan_out_search, merge_peer_results
 from .search_utils import (
+    apply_set_operators,
     deduplicate_results,
     format_search_response,
     parse_date,
@@ -427,6 +428,10 @@ def handle_search_request(request: dict) -> dict:
         offset=request.get("offset", 0),
         include_tool_context=request.get("include_tool_context", False),
         from_peer=request.get("from_peer", False),
+        require_terms=request.get("require_terms", []),
+        exclude_terms=request.get("exclude_terms", []),
+        promote_terms=request.get("promote_terms", []),
+        demote_terms=request.get("demote_terms", []),
     )
 
 
@@ -442,16 +447,27 @@ def search(
     offset: int,
     include_tool_context: bool = False,
     from_peer: bool = False,
+    require_terms: list[str] | None = None,
+    exclude_terms: list[str] | None = None,
+    promote_terms: list[str] | None = None,
+    demote_terms: list[str] | None = None,
 ) -> dict:
     """Search implementation — always runs as the engine.
 
     Searches directly against the in-memory index and SQLite cache,
     then fans out to peers if configured.
     """
+    require_terms = require_terms or []
+    exclude_terms = exclude_terms or []
+    promote_terms = promote_terms or []
+    demote_terms = demote_terms or []
+
     # Engine path: search directly
-    local_response = engine_search(query, workspace, source, after, before,
-                                   context_size, threshold, max_results, offset,
-                                   include_tool_context)
+    local_response = engine_search(
+        query, workspace, source, after, before,
+        context_size, threshold, max_results, offset, include_tool_context,
+        require_terms, exclude_terms, promote_terms, demote_terms,
+    )
 
     # Fan out to peers if configured (skip if this request came from a peer to avoid loops)
     if from_peer:
@@ -460,7 +476,73 @@ def search(
     return _search_with_peers(
         local_response, query, workspace, source, after, before,
         context_size, threshold, max_results, offset, include_tool_context,
+        require_terms, exclude_terms, promote_terms, demote_terms,
     )
+
+
+def _retrieve_uuid_set(
+    terms: list[str],
+    *,
+    backend,
+    search_index,
+    cache,
+    workspace: str | None,
+    source: Source | None,
+    after_ts: float | None,
+    before_ts: float | None,
+    threshold: float,
+    include_tool_context: bool,
+    candidate_limit: int,
+) -> set[str]:
+    """Retrieve the set of message uuids matching any of `terms` (set C).
+
+    Each term is run as its own hybrid retrieval (vector + FTS), exactly like a
+    normal query, and the uuids of everything scoring above `threshold` are
+    unioned. This gives *semantic* membership — a message about a concept is in
+    the set even if it never contains the literal token — which is what lets the
+    require/exclude/promote/demote operators work on meaning, not just keywords.
+
+    Membership is defined by the same relevance threshold the main query uses,
+    so there is no separate tuning knob. Returns an empty set for no terms.
+    """
+    if not terms:
+        return set()
+
+    uuids: set[str] = set()
+    for term in terms:
+        if not term or not term.strip():
+            continue
+        try:
+            term_embedding = backend.encode_query(term)
+        except Exception:
+            # If we cannot embed the operator term, fall back to FTS-only below.
+            term_embedding = None
+
+        if term_embedding is not None:
+            vec_hits = search_index.search(
+                query_embedding=term_embedding,
+                workspace=workspace,
+                source=source.value if source else None,
+                after_ts=after_ts,
+                before_ts=before_ts,
+                threshold=threshold,
+                max_results=candidate_limit,
+                include_tool_context=include_tool_context,
+            )
+            uuids.update(r["uuid"] for r in vec_hits)
+
+        if cache is not None:
+            fts_hits = cache.fts_search(
+                query=term,
+                workspace=workspace,
+                source=source.value if source else None,
+                after_ts=after_ts,
+                before_ts=before_ts,
+                limit=candidate_limit,
+            )
+            uuids.update(r["uuid"] for r in fts_hits)
+
+    return uuids
 
 
 def engine_search(
@@ -474,8 +556,32 @@ def engine_search(
     max_results: int,
     offset: int,
     include_tool_context: bool = False,
+    require_terms: list[str] | None = None,
+    exclude_terms: list[str] | None = None,
+    promote_terms: list[str] | None = None,
+    demote_terms: list[str] | None = None,
 ) -> dict:
-    """Direct search using in-memory numpy matrix (engine only)."""
+    """Direct search using in-memory numpy matrix (engine only).
+
+    Beyond the base query, four operators re-shape the result set by set
+    membership. Each operator's term(s) are retrieved as their own search
+    (set C), and membership is applied by uuid:
+
+      require  -> keep only results also in C   (hard, intersection)
+      exclude  -> drop results in C             (hard, difference)
+      promote  -> results in C rank above rest  (soft, stable partition)
+      demote   -> results in C rank below rest  (soft, stable partition)
+
+    Precedence: require, then exclude, then promote/demote — hard membership
+    changes run before soft reordering. Operators are applied to the whole
+    candidate pool before pagination, so exclusion/require backfill from deeper
+    results rather than shrinking the page.
+    """
+    require_terms = require_terms or []
+    exclude_terms = exclude_terms or []
+    promote_terms = promote_terms or []
+    demote_terms = demote_terms or []
+
     indexer = get_background_indexer()
     backend = indexer.backend
 
@@ -515,6 +621,8 @@ def engine_search(
     # Parse date filters
     after_dt = parse_date(after)
     before_dt = parse_date(before)
+    after_ts = after_dt.timestamp() if after_dt else None
+    before_ts = before_dt.timestamp() if before_dt else None
 
     # Embed the query
     try:
@@ -528,36 +636,83 @@ def engine_search(
             "hint": "The embedding backend may be unavailable.",
         }
 
+    # Over-fetch generously so operator filtering can backfill the page rather
+    # than shrink it. Operators (esp. require/exclude) can remove many
+    # candidates, so we pull a wider pool than the base dedup over-fetch.
+    candidate_limit = max((offset + max_results) * 5, 50)
+
     # Fast vectorized search
     scored_results = search_index.search(
         query_embedding=query_embedding,
         workspace=workspace,
         source=source.value if source else None,
-        after_ts=after_dt.timestamp() if after_dt else None,
-        before_ts=before_dt.timestamp() if before_dt else None,
+        after_ts=after_ts,
+        before_ts=before_ts,
         threshold=threshold,
-        max_results=(offset + max_results) * 3,  # Over-fetch for dedup
+        max_results=candidate_limit,
         include_tool_context=include_tool_context,
     )
 
-    # Hybrid search: also run FTS5 full-text search and merge results
+    # Hybrid search: also run FTS5 full-text search and merge results.
+    # Keyword-exact exclusion is applied natively via FTS NOT as a fast first
+    # pass; the semantic set-based exclude below still runs to catch vector-only
+    # and concept-level hits.
     cache = indexer.cache
     if cache is not None:
         fts_results = cache.fts_search(
             query=query,
             workspace=workspace,
             source=source.value if source else None,
-            after_ts=after_dt.timestamp() if after_dt else None,
-            before_ts=before_dt.timestamp() if before_dt else None,
-            limit=(offset + max_results) * 3,
+            after_ts=after_ts,
+            before_ts=before_ts,
+            limit=candidate_limit,
+            negative_terms=exclude_terms,
         )
         scored_results = _merge_hybrid_results(scored_results, fts_results)
 
-    # Apply recency boost: recent messages get a slight score advantage
+    # --- Operator model (require / exclude / promote / demote) ---
+    # Retrieve each operator's term set as its own search (set C) and apply the
+    # 2x2 by uuid. Recency is folded into `score` FIRST (below) so the bands are
+    # ranked by recency-adjusted relevance; apply_set_operators then re-sorts
+    # each band by score, preserving the recency signal within each band.
+    #
+    # Recency boost: recent messages get a slight score advantage. Applied
+    # unconditionally BEFORE the operators so the promote/neutral/demote bands
+    # are internally ordered by recency-adjusted score. (It re-sorts the whole
+    # list by score, which the operator partition then re-partitions — the
+    # band structure wins, recency only orders within each band.)
     scored_results = _apply_recency_boost(scored_results, search_index.oldest_timestamp)
 
-    # Deduplicate overlapping context windows
-    scored_results = deduplicate_results(scored_results, context_size)
+    if require_terms or exclude_terms or promote_terms or demote_terms:
+        def uuid_set(terms: list[str]) -> set[str]:
+            return _retrieve_uuid_set(
+                terms,
+                backend=backend,
+                search_index=search_index,
+                cache=cache,
+                workspace=workspace,
+                source=source,
+                after_ts=after_ts,
+                before_ts=before_ts,
+                threshold=threshold,
+                include_tool_context=include_tool_context,
+                candidate_limit=candidate_limit,
+            )
+
+        scored_results = apply_set_operators(
+            scored_results,
+            require_uuids=uuid_set(require_terms) if require_terms else None,
+            exclude_uuids=uuid_set(exclude_terms) if exclude_terms else None,
+            promote_uuids=uuid_set(promote_terms) if promote_terms else None,
+            demote_uuids=uuid_set(demote_terms) if demote_terms else None,
+        )
+
+    # Deduplicate overlapping context windows. Preserve operator ordering when a
+    # promote/demote partition is in effect (a score re-sort would undo it).
+    soft_ranking = bool(promote_terms or demote_terms)
+    scored_results = deduplicate_results(
+        scored_results, context_size, preserve_order=soft_ranking
+    )
 
     # Build response with context windows
 
@@ -588,8 +743,24 @@ def _search_with_peers(
     max_results: int,
     offset: int,
     include_tool_context: bool = False,
+    require_terms: list[str] | None = None,
+    exclude_terms: list[str] | None = None,
+    promote_terms: list[str] | None = None,
+    demote_terms: list[str] | None = None,
 ) -> dict:
-    """Merge local results with peer results if peering is enabled."""
+    """Merge local results with peer results if peering is enabled.
+
+    All four operators are forwarded to peers as structured data so each peer
+    applies them against its own index (where it can retrieve set C locally).
+    On merge we additionally apply a best-effort token-based scrub for
+    exclude_terms, so an older peer that ignores the parameters still can't
+    inject rows we asked to exclude — version skew degrades to over-inclusion,
+    never to inverted results.
+    """
+    require_terms = require_terms or []
+    exclude_terms = exclude_terms or []
+    promote_terms = promote_terms or []
+    demote_terms = demote_terms or []
     peer_request = {
         "query": query,
         "workspace": workspace,
@@ -601,11 +772,15 @@ def _search_with_peers(
         "max_results": max_results,
         "offset": offset,
         "include_tool_context": include_tool_context,
+        "require_terms": require_terms,
+        "exclude_terms": exclude_terms,
+        "promote_terms": promote_terms,
+        "demote_terms": demote_terms,
     }
 
     peer_responses = fan_out_search(peer_request)
     if peer_responses:
-        return merge_peer_results(local_response, peer_responses)
+        return merge_peer_results(local_response, peer_responses, exclude_terms)
     return local_response
 
 
