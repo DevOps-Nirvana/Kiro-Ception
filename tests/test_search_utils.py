@@ -5,13 +5,134 @@ from datetime import datetime
 import pytest
 
 from kiro_ception.search_utils import (
+    apply_set_operators,
     build_context_window,
     deduplicate_results,
     format_search_response,
     generate_hint,
     parse_date,
+    token_excluded,
     truncate_content,
 )
+
+
+# --- apply_set_operators (the require/exclude/promote/demote 2x2) ---
+
+
+def _rows(*uuids):
+    """Build score-desc result rows from uuids (score decreasing by position)."""
+    return [{"uuid": u, "score": 1.0 - i * 0.01} for i, u in enumerate(uuids)]
+
+
+class TestApplySetOperators:
+    def test_no_operators_is_identity(self):
+        rows = _rows("a", "b", "c")
+        assert apply_set_operators(rows) == rows
+
+    def test_require_keeps_only_intersection(self):
+        rows = _rows("a", "b", "c", "d")
+        out = apply_set_operators(rows, require_uuids={"b", "d"})
+        assert [r["uuid"] for r in out] == ["b", "d"]
+
+    def test_exclude_drops_members(self):
+        rows = _rows("a", "b", "c", "d")
+        out = apply_set_operators(rows, exclude_uuids={"b", "c"})
+        assert [r["uuid"] for r in out] == ["a", "d"]
+
+    def test_promote_ranks_members_first_preserving_order(self):
+        rows = _rows("a", "b", "c", "d")
+        out = apply_set_operators(rows, promote_uuids={"c", "d"})
+        # c,d promoted (in their original relative order), then a,b
+        assert [r["uuid"] for r in out] == ["c", "d", "a", "b"]
+
+    def test_demote_ranks_members_last_preserving_order(self):
+        rows = _rows("a", "b", "c", "d")
+        out = apply_set_operators(rows, demote_uuids={"a", "b"})
+        # non-members c,d first, then demoted a,b
+        assert [r["uuid"] for r in out] == ["c", "d", "a", "b"]
+
+    def test_promote_and_demote_three_way_partition(self):
+        rows = _rows("a", "b", "c", "d", "e")
+        out = apply_set_operators(rows, promote_uuids={"d"}, demote_uuids={"a"})
+        # promoted d, neutral b,c,e (original order), demoted a
+        assert [r["uuid"] for r in out] == ["d", "b", "c", "e", "a"]
+
+    def test_precedence_require_then_exclude_then_rank(self):
+        rows = _rows("a", "b", "c", "d", "e")
+        out = apply_set_operators(
+            rows,
+            require_uuids={"a", "b", "c", "d"},  # drops e
+            exclude_uuids={"b"},                 # drops b
+            demote_uuids={"a"},                  # a to the bottom
+        )
+        # after require: a,b,c,d ; after exclude: a,c,d ; demote a: c,d,a
+        assert [r["uuid"] for r in out] == ["c", "d", "a"]
+
+    def test_promote_wins_when_uuid_in_both_sets(self):
+        rows = _rows("a", "b")
+        out = apply_set_operators(rows, promote_uuids={"a"}, demote_uuids={"a"})
+        assert [r["uuid"] for r in out] == ["a", "b"]
+
+    def test_empty_require_set_is_noop_not_wipeout(self):
+        # An empty/falsy require set must NOT filter everything out.
+        rows = _rows("a", "b")
+        assert apply_set_operators(rows, require_uuids=set()) == rows
+        assert apply_set_operators(rows, require_uuids=None) == rows
+
+    def test_empty_input(self):
+        assert apply_set_operators([], require_uuids={"a"}, exclude_uuids={"b"}) == []
+
+
+# --- token_excluded ---
+
+
+class TestTokenExcluded:
+    def test_whole_token_match_excludes(self):
+        assert token_excluded("the cat sat", ["cat"]) is True
+
+    def test_substring_does_not_exclude(self):
+        # "cat" must not match inside "category"
+        assert token_excluded("the category list", ["cat"]) is False
+
+    def test_case_insensitive(self):
+        assert token_excluded("The CAT Sat", ["cat"]) is True
+        assert token_excluded("the cat sat", ["CAT"]) is True
+
+    def test_empty_list_is_noop(self):
+        assert token_excluded("the cat sat", []) is False
+
+    def test_none_list_is_noop(self):
+        assert token_excluded("the cat sat", None) is False
+
+    def test_empty_text_is_false(self):
+        assert token_excluded("", ["cat"]) is False
+
+    def test_none_text_is_false(self):
+        assert token_excluded(None, ["cat"]) is False
+
+    def test_multiple_terms_any_match(self):
+        assert token_excluded("deploy to staging now", ["prod", "staging"]) is True
+        assert token_excluded("deploy to prod now", ["prod", "staging"]) is True
+        assert token_excluded("deploy to dev now", ["prod", "staging"]) is False
+
+    def test_code_placeholder_token_matches(self):
+        # "[code:python]" tokenizes to "code" and "python"
+        assert token_excluded("here is [code:python] example", ["python"]) is True
+        assert token_excluded("here is [code:python] example", ["code"]) is True
+
+    def test_punctuation_is_delimiter(self):
+        assert token_excluded("error: cat, dog; fish.", ["dog"]) is True
+
+    def test_multi_token_negative_requires_all(self):
+        # A multi-word term matches only if all its tokens are present
+        assert token_excluded("run the unit test suite", ["unit test"]) is True
+        assert token_excluded("run the unit suite", ["unit test"]) is False
+
+    def test_empty_string_term_ignored(self):
+        assert token_excluded("the cat sat", [""]) is False
+
+    def test_non_word_term_never_matches(self):
+        assert token_excluded("the cat sat !!!", ["!!"]) is False
 
 
 # --- parse_date ---

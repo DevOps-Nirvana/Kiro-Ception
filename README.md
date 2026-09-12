@@ -257,8 +257,8 @@ Kiro can call these tools naturally during conversation:
 
 | Tool | Purpose |
 |------|---------|
-| `search_project_history` | Search conversations scoped to the current workspace |
-| `search_global_history` | Search across all workspaces (supports `source` filter: all/cli/ide) |
+| `search_project_history` | Search conversations scoped to the current workspace (supports require/exclude/promote/demote operators) |
+| `search_global_history` | Search across all workspaces (supports `source` filter: all/cli/ide, and require/exclude/promote/demote operators) |
 | `get_indexing_status` | Check indexer progress, rate, errors, ETA |
 | `rescan` | Trigger a rescan for new sessions (`full=True` to re-read everything) |
 | `get_config` | Show effective config, paths, cache stats, instance role, etc |
@@ -277,6 +277,77 @@ Both search tools accept:
 | `threshold` | 0.2 | Minimum similarity score (0–1) |
 | `max_results` | 10 | Maximum results to return |
 | `offset` | 0 | Skip results for pagination |
+| `require_terms` | `[]` | Keep **only** results also about these terms (hard AND / intersection) |
+| `exclude_terms` | `[]` | **Drop** results about these terms (hard NOT / difference) |
+| `promote_terms` | `[]` | Keep everything, but rank results about these terms **above** the rest (soft) |
+| `demote_terms` | `[]` | Keep everything, but rank results about these terms **below** the rest (soft) |
+
+### Refining results: require / exclude / promote / demote
+
+Beyond the plain query, four optional operators reshape the result set. They let
+you express things a single query string can't — "this, but not that", "only the
+ones that are also about X", "rank the Y ones lower". All four default to `[]`
+(no effect), so leaving them off reproduces ordinary search exactly.
+
+**How membership works (this is the important part).** Each operator term is run
+as *its own search* — call the set of messages it matches **set C**. Membership is
+decided by the same relevance `threshold` the main query uses (no separate knob).
+Because set C comes from a real search, the operators work on **meaning**, not just
+literal words: `exclude_terms=["rollback"]` can drop a message that is *about*
+reverting a deploy even if it never contains the word "rollback". Keyword-exact
+exclusion is additionally enforced natively via SQLite FTS5's `NOT` operator, so
+literal-token matches are removed at the index level too.
+
+The four operators form a 2×2 — one axis is **hard** (changes *which* results
+appear) vs **soft** (changes *order* only); the other is positive vs negative
+intent:
+
+|                | **Hard** (add/remove results) | **Soft** (reorder only) |
+|----------------|-------------------------------|--------------------------|
+| **Positive**   | `require_terms` — keep only results also in set C (∩) | `promote_terms` — set-C results rank first |
+| **Negative**   | `exclude_terms` — drop results in set C (−) | `demote_terms` — set-C results rank last |
+
+**Precedence** when several are combined: `require` → `exclude` → `promote`/`demote`.
+Hard membership changes run before soft reordering (there's no point ranking
+results you're about to remove). Exclusion/require are applied to the whole
+candidate pool *before* pagination, so removing results backfills from deeper
+matches rather than shrinking the page.
+
+**Prefer `demote` over `exclude` when in doubt.** Exclude is lossy — a mistaken
+exclusion hides a result you can't see. Demote is non-destructive — a mistaken
+demotion only ranks a result lower, still visible. Since semantic membership is
+fuzzy (threshold-dependent), demote tolerates that fuzziness far better.
+
+Examples:
+
+```python
+# "deployment discussions, but not the staging ones"
+search_project_history(query="deployment process", exclude_terms=["staging"])
+
+# "only deployment discussions that also cover rollbacks"
+search_project_history(query="deployment process", require_terms=["rollback"])
+
+# "auth work, but push the OAuth-specific stuff to the bottom"
+search_global_history(query="authentication", demote_terms=["oauth"])
+
+# "database performance — surface anything about indexing first"
+search_global_history(query="database performance", promote_terms=["indexing"])
+
+# combine: only prod-related deploys, minus staging, with rollbacks up top
+search_project_history(
+    query="deploy",
+    require_terms=["production"],
+    exclude_terms=["staging"],
+    promote_terms=["rollback"],
+)
+```
+
+> **Federation note:** in peer (multi-machine) searches, all four operators are
+> forwarded to each peer, which applies them against its own index. On merge, the
+> local node additionally runs a best-effort keyword scrub for `exclude_terms`, so
+> a peer running older code that ignores the parameters can't inject results you
+> asked to exclude — version skew degrades to *over*-inclusion, never to inverted
+> results.
 
 ## Technologies & Libraries
 

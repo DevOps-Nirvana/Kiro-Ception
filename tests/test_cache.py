@@ -499,3 +499,81 @@ class TestFtsSearchContentTierFiltering:
         results = cache.fts_search("uniquepattern123", include_tool_context=True)
         assert len(results) == 1
         assert results[0]["content_tier"] == "tool_context"
+
+
+
+class TestFtsSearchNegativeTerms:
+    """Tests for fts_search negative_terms (FTS5 NOT) exclusion."""
+
+    def _insert_deploy_messages(self, cache):
+        now = time.time()
+        msgs = [
+            ("msg-prod", "sess-1", "/test", now, "user",
+             "deploy the application to prod", 0, "ide", "hp",
+             "conversation", None),
+            ("msg-staging", "sess-1", "/test", now, "user",
+             "deploy the application to staging", 1, "ide", "hs",
+             "conversation", None),
+            ("msg-both", "sess-1", "/test", now, "assistant",
+             "deploy notes for prod and staging environments", 2, "ide", "hb",
+             "conversation", None),
+        ]
+        cache.put_messages_batch(msgs)
+
+    def test_negative_term_excludes_matching_rows(self, cache):
+        """A negative term drops rows containing that whole token."""
+        self._insert_deploy_messages(cache)
+
+        results = cache.fts_search("deploy", negative_terms=["staging"])
+        contents = [r["content"] for r in results]
+        # prod-only row remains; any row mentioning staging is gone
+        assert any("prod" in c for c in contents)
+        assert all("staging" not in c for c in contents)
+
+    def test_empty_negative_terms_unchanged(self, cache):
+        """negative_terms=[] reproduces default behavior."""
+        self._insert_deploy_messages(cache)
+
+        baseline = cache.fts_search("deploy")
+        with_empty = cache.fts_search("deploy", negative_terms=[])
+        assert {r["uuid"] for r in baseline} == {r["uuid"] for r in with_empty}
+
+    def test_none_negative_terms_unchanged(self, cache):
+        """negative_terms=None behaves like omitting it."""
+        self._insert_deploy_messages(cache)
+
+        baseline = cache.fts_search("deploy")
+        with_none = cache.fts_search("deploy", negative_terms=None)
+        assert {r["uuid"] for r in baseline} == {r["uuid"] for r in with_none}
+
+    def test_negative_equals_positive_yields_empty(self, cache):
+        """When a negative term equals the positive query, nothing survives."""
+        self._insert_deploy_messages(cache)
+
+        results = cache.fts_search("deploy", negative_terms=["deploy"])
+        assert results == []
+
+    def test_multiple_negative_terms(self, cache):
+        """Multiple negative terms each exclude their rows."""
+        self._insert_deploy_messages(cache)
+
+        results = cache.fts_search("deploy", negative_terms=["staging", "prod"])
+        # Only rows with neither staging nor prod would remain — here none do
+        for r in results:
+            assert "staging" not in r["content"]
+            assert "prod" not in r["content"]
+
+    def test_negative_only_query_returns_empty(self, cache):
+        """A query with no positive tokens cannot run FTS — returns []."""
+        self._insert_deploy_messages(cache)
+
+        results = cache.fts_search("", negative_terms=["staging"])
+        assert results == []
+
+    def test_quote_char_in_negative_term_does_not_crash(self, cache):
+        """A negative term containing a double quote is escaped, not crashing."""
+        self._insert_deploy_messages(cache)
+
+        # Should not raise; escaping handles the embedded quote
+        results = cache.fts_search("deploy", negative_terms=['sta"ging'])
+        assert isinstance(results, list)

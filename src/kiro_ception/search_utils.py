@@ -4,8 +4,113 @@ These functions handle deduplication, pagination, context windowing,
 date parsing, and response formatting — all without external I/O dependencies.
 """
 
+import re
 from collections import defaultdict
 from datetime import datetime
+
+# Word-token pattern for whole-token exclusion matching. Splits on any
+# non-word character, so "[code:python]" yields tokens "code" and "python".
+_TOKEN_PATTERN = re.compile(r"\w+")
+
+
+def token_excluded(text: str, negative_terms: list[str] | None) -> bool:
+    """Return True if any negative term appears as a whole token in text.
+
+    Matching is case-insensitive and whole-token: excluding "cat" matches
+    "the cat sat" but NOT "category". Text is tokenized with \\w+, so
+    punctuation is a delimiter and placeholders like "[code:python]" become
+    the tokens "code" and "python".
+
+    Empty or None negative_terms is a no-op (returns False). Empty/None text
+    returns False. Negative terms that contain no word characters (e.g. "!!")
+    can never match and are ignored.
+    """
+    if not negative_terms or not text:
+        return False
+
+    tokens = set(_TOKEN_PATTERN.findall(text.lower()))
+    if not tokens:
+        return False
+
+    for term in negative_terms:
+        if not term:
+            continue
+        # A negative term may itself be multi-token (e.g. "unit test"); require
+        # every word-token of the term to be present for it to exclude.
+        term_tokens = _TOKEN_PATTERN.findall(term.lower())
+        if term_tokens and all(t in tokens for t in term_tokens):
+            return True
+    return False
+
+
+def apply_set_operators(
+    scored_results: list[dict],
+    require_uuids: set[str] | None = None,
+    exclude_uuids: set[str] | None = None,
+    promote_uuids: set[str] | None = None,
+    demote_uuids: set[str] | None = None,
+) -> list[dict]:
+    """Apply the require/exclude/promote/demote operator model to results.
+
+    All four operators act on set membership by uuid. The sets are computed
+    upstream by retrieving each operator's term(s) as their own search (set C)
+    and collecting the uuids of the messages that match. This function is the
+    pure set-logic core, independent of any retrieval or I/O.
+
+    Operators form a 2x2:
+      - Hard membership (change WHICH results exist):
+          require  -> keep only results whose uuid is in require_uuids  (∩)
+          exclude  -> drop results whose uuid is in exclude_uuids       (−)
+      - Soft ranking (change ORDER only, never drop):
+          promote  -> results in promote_uuids sort above the rest
+          demote   -> results in demote_uuids sort below the rest
+
+    Precedence (per design): require, then exclude, then promote/demote.
+    Hard membership changes run before soft reordering — there is no point
+    ranking results that are about to be removed.
+
+    Input is assumed already sorted by score descending. Relative order within
+    each promote/neutral/demote partition is preserved (stable partition), so
+    relevance ordering is retained inside each band.
+
+    Args:
+        scored_results: results (dicts with at least "uuid"), score-desc order.
+        require_uuids: if not None/empty, keep only results in this set.
+        exclude_uuids: drop results in this set.
+        promote_uuids: results in this set rank above non-members.
+        demote_uuids: results in this set rank below non-members.
+
+    Returns:
+        Filtered and reordered results.
+    """
+    results = scored_results
+
+    # --- Hard membership: require (intersection) ---
+    if require_uuids:
+        results = [r for r in results if r["uuid"] in require_uuids]
+
+    # --- Hard membership: exclude (difference) ---
+    if exclude_uuids:
+        results = [r for r in results if r["uuid"] not in exclude_uuids]
+
+    # --- Soft ranking: promote/demote (stable three-way partition) ---
+    if promote_uuids or demote_uuids:
+        promote_uuids = promote_uuids or set()
+        demote_uuids = demote_uuids or set()
+        promoted, neutral, demoted = [], [], []
+        for r in results:
+            uid = r["uuid"]
+            # promote wins ties with demote if a uuid is somehow in both:
+            # promoting is the more specific positive intent.
+            if uid in promote_uuids:
+                promoted.append(r)
+            elif uid in demote_uuids:
+                demoted.append(r)
+            else:
+                neutral.append(r)
+        results = promoted + neutral + demoted
+
+    return results
 
 
 def parse_date(value: str | None) -> datetime | None:
@@ -22,15 +127,24 @@ def parse_date(value: str | None) -> datetime | None:
         return None
 
 
-def deduplicate_results(results: list[dict], context_size: int) -> list[dict]:
+def deduplicate_results(
+    results: list[dict], context_size: int, preserve_order: bool = False
+) -> list[dict]:
     """Deduplicate results with overlapping context windows.
 
     Within each session, if two matches are within 2*context_size message
-    indices of each other, keep only the higher-scoring one. Results are
-    returned sorted by score descending.
+    indices of each other, keep only the higher-scoring one.
+
+    By default the deduplicated results are returned sorted by score descending.
+    When preserve_order=True, the input order is preserved instead — used when a
+    promote/demote operator has already imposed a deliberate ordering that must
+    not be undone by a score re-sort.
     """
     if not results:
         return []
+
+    # Remember the incoming order so we can restore it when preserving order.
+    order_index = {id(r): i for i, r in enumerate(results)}
 
     by_session: dict[str, list[dict]] = defaultdict(list)
     for r in results:
@@ -53,7 +167,11 @@ def deduplicate_results(results: list[dict], context_size: int) -> list[dict]:
                 kept.append(r)
         deduplicated.extend(kept)
 
-    deduplicated.sort(key=lambda x: x["score"], reverse=True)
+    if preserve_order:
+        # Restore the order the results arrived in (carries promote/demote bands).
+        deduplicated.sort(key=lambda x: order_index.get(id(x), 0))
+    else:
+        deduplicated.sort(key=lambda x: x["score"], reverse=True)
     return deduplicated
 
 

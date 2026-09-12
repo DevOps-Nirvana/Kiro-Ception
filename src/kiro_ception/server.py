@@ -92,6 +92,10 @@ def search_project_history(
     offset: int = 0,
     include_tool_context: bool = False,
     workspace: str | None = None,
+    require_terms: list[str] | None = None,
+    exclude_terms: list[str] | None = None,
+    promote_terms: list[str] | None = None,
+    demote_terms: list[str] | None = None,
 ) -> dict:
     """
     Search conversation history for the CURRENT WORKSPACE only.
@@ -116,6 +120,24 @@ def search_project_history(
                 working directory differs from the project you're working in
                 (e.g., multi-root workspaces).
 
+    Refine which results come back and in what order with four optional operator
+    lists. Each term is run as its own search ("set C") and applied by matched
+    message, so they work on MEANING, not just literal words. They form a 2x2 —
+    hard membership (change which results appear) vs soft ranking (reorder only):
+
+        require_terms:  keep ONLY results that are also about these terms
+                        (hard AND — narrows to the intersection).
+        exclude_terms:  drop results that are about these terms
+                        (hard NOT — "this AND this AND NOT that").
+        promote_terms:  keep everything, but rank results about these terms
+                        ABOVE the rest (soft; nothing is removed).
+        demote_terms:   keep everything, but rank results about these terms
+                        BELOW the rest (soft; nothing is removed).
+
+    Precedence: require, then exclude, then promote/demote. All default to []
+    (no effect). Prefer demote over exclude when you only want to de-emphasize a
+    topic rather than risk hiding a relevant result.
+
     Returns:
         Search results with matched messages, scores, context, and pagination info
     """
@@ -133,6 +155,10 @@ def search_project_history(
         "max_results": max_results,
         "offset": offset,
         "include_tool_context": include_tool_context,
+        "require_terms": require_terms or [],
+        "exclude_terms": exclude_terms or [],
+        "promote_terms": promote_terms or [],
+        "demote_terms": demote_terms or [],
     })
 
 
@@ -147,6 +173,10 @@ def search_global_history(
     offset: int = 0,
     source: str = "all",
     include_tool_context: bool = False,
+    require_terms: list[str] | None = None,
+    exclude_terms: list[str] | None = None,
+    promote_terms: list[str] | None = None,
+    demote_terms: list[str] | None = None,
 ) -> dict:
     """
     Search conversation history across ALL WORKSPACES.
@@ -171,6 +201,24 @@ def search_global_history(
                 responses) are matched. When true, tool context summaries are
                 also included as searchable content.
 
+    Refine which results come back and in what order with four optional operator
+    lists. Each term is run as its own search ("set C") and applied by matched
+    message, so they work on MEANING, not just literal words. They form a 2x2 —
+    hard membership (change which results appear) vs soft ranking (reorder only):
+
+        require_terms:  keep ONLY results that are also about these terms
+                        (hard AND — narrows to the intersection).
+        exclude_terms:  drop results that are about these terms
+                        (hard NOT — "this AND this AND NOT that").
+        promote_terms:  keep everything, but rank results about these terms
+                        ABOVE the rest (soft; nothing is removed).
+        demote_terms:   keep everything, but rank results about these terms
+                        BELOW the rest (soft; nothing is removed).
+
+    Precedence: require, then exclude, then promote/demote. All default to []
+    (no effect). Prefer demote over exclude when you only want to de-emphasize a
+    topic rather than risk hiding a relevant result.
+
     Returns:
         Search results with matched messages, scores, workspace, context, pagination
     """
@@ -189,6 +237,10 @@ def search_global_history(
         "max_results": max_results,
         "offset": offset,
         "include_tool_context": include_tool_context,
+        "require_terms": require_terms or [],
+        "exclude_terms": exclude_terms or [],
+        "promote_terms": promote_terms or [],
+        "demote_terms": demote_terms or [],
     })
 
 

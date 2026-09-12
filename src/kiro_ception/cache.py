@@ -274,6 +274,7 @@ class EmbeddingCache:
         before_ts: float | None = None,
         limit: int = 100,
         include_tool_context: bool = False,
+        negative_terms: list[str] | None = None,
     ) -> list[dict]:
         """Full-text search using FTS5 with BM25 ranking.
 
@@ -283,6 +284,10 @@ class EmbeddingCache:
         When include_tool_context is False (default), only matches against
         content_tier='conversation' messages. When True, also matches against
         'tool_context' messages.
+
+        When negative_terms is provided, each term is appended to the MATCH
+        expression as a native FTS5 ``NOT "term"`` clause, so rows containing
+        any negative term are excluded at the index level.
 
         Returns list of dicts with keys matching the messages table columns
         plus a 'fts_score' key (normalized to 0-1 range, higher = better).
@@ -330,11 +335,30 @@ class EmbeddingCache:
         # FTS5 MATCH query — quote each token to prevent interpretation as column names
         # or operators. This handles terms like "ruby" that FTS5 would otherwise
         # try to interpret as column references.
-        fts_query = " ".join(
-            f'"{token.replace(chr(34), chr(34)+chr(34))}"'
-            for token in query.split()
-            if token.strip()
-        )
+        def _quote(token: str) -> str:
+            return f'"{token.replace(chr(34), chr(34) + chr(34))}"'
+
+        positive_tokens = [
+            _quote(token) for token in query.split() if token.strip()
+        ]
+
+        # Negative terms become native FTS5 NOT clauses. Each term is quoted with
+        # the same escaping so it can't be misread as syntax either. A term may be
+        # multi-word ("unit test") — quoting it makes FTS5 treat it as a phrase.
+        negative_tokens = [
+            _quote(term) for term in (negative_terms or []) if term and term.strip()
+        ]
+
+        # FTS5 requires at least one positive term for a NOT expression; a query
+        # of only "NOT x" is invalid. If there are no positive tokens, we cannot
+        # run an FTS query at all — return no FTS matches (the vector path plus the
+        # post-filter still handle a negative-only query end-to-end).
+        if not positive_tokens:
+            return []
+
+        fts_query = " ".join(positive_tokens)
+        if negative_tokens:
+            fts_query += " NOT " + " NOT ".join(negative_tokens)
 
         sql = f"""
             SELECT m.uuid, m.session_id, m.workspace, m.timestamp, m.role,

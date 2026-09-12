@@ -610,3 +610,146 @@ class TestSearchIndexRefresh:
             si.refresh_if_needed()
             # No error, no throttle — just no data
             assert si.message_count == 0
+
+
+
+class TestEngineSearchOperators:
+    """End-to-end engine_search() require/exclude/promote/demote via set(C)."""
+
+    def _index(self, cache, mock_backend, fake_sessions, fake_messages):
+        for session in fake_sessions:
+            msgs = fake_messages[session.session_id]
+            metadata_rows = []
+            texts = []
+            hashes = []
+            for msg in msgs:
+                text_hash = hashlib.md5(msg.searchable_text.encode()).hexdigest()
+                metadata_rows.append((
+                    msg.uuid, msg.session_id, msg.workspace,
+                    msg.timestamp.timestamp(), msg.role, msg.searchable_text,
+                    msg.message_index, msg.source.value, text_hash,
+                ))
+                texts.append(msg.searchable_text)
+                hashes.append(text_hash)
+            cache.put_messages_batch(metadata_rows)
+            cache.put_embeddings_batch(list(zip(hashes, mock_backend.encode(texts))))
+            cache.update_session_state(session.session_id, session.modified.timestamp())
+
+    def _run(self, cache, mock_backend, query, threshold=0.0, **operators):
+        from kiro_ception import search as search_mod
+
+        indexer_mock = MagicMock()
+        indexer_mock.cache = cache
+        indexer_mock.backend = mock_backend
+
+        with patch.object(search_mod, "get_background_indexer", return_value=indexer_mock):
+            si = search_mod.SearchIndex()
+            si._refresh()
+            with patch.object(search_mod, "get_search_index", return_value=si):
+                return search_mod.engine_search(
+                    query=query,
+                    workspace=None,
+                    source=None,
+                    after=None,
+                    before=None,
+                    context_size=3,
+                    threshold=threshold,
+                    max_results=20,
+                    offset=0,
+                    **operators,
+                )
+
+    def _contents(self, response):
+        return [r["matched_message"]["content"] for r in response["results"]]
+
+    def _uuids(self, response):
+        return [r["matched_message"]["uuid"] for r in response["results"]]
+
+    def test_exclude_drops_matching_messages(
+        self, cache, mock_backend, fake_sessions, fake_messages
+    ):
+        self._index(cache, mock_backend, fake_sessions, fake_messages)
+
+        baseline = self._run(cache, mock_backend, "deploy production")
+        assert any("production" in c for c in self._contents(baseline))
+
+        excluded = self._run(
+            cache, mock_backend, "deploy production", exclude_terms=["production"]
+        )
+        assert all("production" not in c for c in self._contents(excluded))
+
+    def test_no_operators_reproduces_baseline(
+        self, cache, mock_backend, fake_sessions, fake_messages
+    ):
+        self._index(cache, mock_backend, fake_sessions, fake_messages)
+        a = self._run(cache, mock_backend, "authentication")
+        b = self._run(cache, mock_backend, "authentication")
+        assert set(self._uuids(a)) == set(self._uuids(b))
+
+    def test_whole_token_exclude_does_not_overmatch(
+        self, cache, mock_backend, fake_sessions, fake_messages
+    ):
+        self._index(cache, mock_backend, fake_sessions, fake_messages)
+        # Excluding "deployment" must not remove "deploy"/"deploying" results.
+        response = self._run(
+            cache, mock_backend, "deployment status", exclude_terms=["deployment"]
+        )
+        for c in self._contents(response):
+            tokens = c.lower().replace(".", " ").split()
+            assert "deployment" not in tokens
+
+    def test_require_narrows_to_intersection(
+        self, cache, mock_backend, fake_sessions, fake_messages
+    ):
+        self._index(cache, mock_backend, fake_sessions, fake_messages)
+        # require "production": every surviving result must be in set(C) for
+        # "production". With the mock backend vector similarity is random noise,
+        # so a threshold that suppresses noise (0.3) makes FTS keyword match the
+        # deciding membership signal — set(C) becomes the "production" messages.
+        response = self._run(
+            cache, mock_backend, "deploy", threshold=0.3, require_terms=["production"]
+        )
+        assert len(response["results"]) > 0
+        assert all("production" in c for c in self._contents(response))
+
+    def test_demote_keeps_all_but_ranks_members_last(
+        self, cache, mock_backend, fake_sessions, fake_messages
+    ):
+        self._index(cache, mock_backend, fake_sessions, fake_messages)
+        baseline = self._run(cache, mock_backend, "deploy production", threshold=0.3)
+        demoted = self._run(
+            cache, mock_backend, "deploy production", threshold=0.3,
+            demote_terms=["production"],
+        )
+        # Nothing removed: same set of uuids as baseline.
+        assert set(self._uuids(demoted)) == set(self._uuids(baseline))
+        # All non-"production" results precede any "production" result.
+        contents = self._contents(demoted)
+        last_non_prod = max(
+            (i for i, c in enumerate(contents) if "production" not in c), default=-1
+        )
+        first_prod = next(
+            (i for i, c in enumerate(contents) if "production" in c), len(contents)
+        )
+        assert last_non_prod < first_prod
+
+    def test_promote_keeps_all_but_ranks_members_first(
+        self, cache, mock_backend, fake_sessions, fake_messages
+    ):
+        self._index(cache, mock_backend, fake_sessions, fake_messages)
+        baseline = self._run(cache, mock_backend, "deploy production", threshold=0.3)
+        promoted = self._run(
+            cache, mock_backend, "deploy production", threshold=0.3,
+            promote_terms=["production"],
+        )
+        assert set(self._uuids(promoted)) == set(self._uuids(baseline))
+        contents = self._contents(promoted)
+        # All "production" results precede any non-"production" result.
+        last_prod = max(
+            (i for i, c in enumerate(contents) if "production" in c), default=-1
+        )
+        first_non_prod = next(
+            (i for i, c in enumerate(contents) if "production" not in c), len(contents)
+        )
+        assert last_prod < first_non_prod
+
